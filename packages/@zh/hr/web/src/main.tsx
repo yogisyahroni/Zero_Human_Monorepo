@@ -516,7 +516,7 @@ function App() {
                   <textarea
                     className="secretBox"
                     value={repoDraft.sshPrivateKey}
-                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                    placeholder="Paste the complete SSH private key here"
                     onChange={(event) => setRepoDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
                   />
                 </label>
