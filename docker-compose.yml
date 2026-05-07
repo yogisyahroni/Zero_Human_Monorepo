@@ -35,7 +35,7 @@ services:
     build:
       context: ./packages/@zh/brain/upstream
       dockerfile: Dockerfile
-    command: ["dashboard", "--host", "0.0.0.0", "--no-open"]
+    command: ["dashboard", "--host", "0.0.0.0", "--no-open", "--insecure"]
     environment:
       HERMES_UID: ${HERMES_UID:-10000}
       HERMES_GID: ${HERMES_GID:-10000}

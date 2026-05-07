@@ -12,8 +12,12 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
   throw "Docker is required. Install Docker Desktop, start it, then run this script again."
 }
 
-docker info *> $null
-if ($LASTEXITCODE -ne 0) {
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& docker info *> $null
+$dockerInfoExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
+if ($dockerInfoExitCode -ne 0) {
   throw "Docker engine is not running. Start Docker Desktop first."
 }
 
