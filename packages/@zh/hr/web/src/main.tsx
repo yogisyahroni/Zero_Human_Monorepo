@@ -50,6 +50,15 @@ type State = {
   tasks: Task[];
   events: Array<{ event: string; timestamp: string; summary: string }>;
   routerMetrics: { requests: number; costUsd: number; inputTokens: number; outputTokens: number };
+  serviceHealth: Array<{
+    name: string;
+    url: string;
+    ok: boolean;
+    status?: number;
+    latencyMs?: number;
+    error?: string;
+  }>;
+  brainMemory: { ok: boolean; agentCount: number; entries: number; error?: string };
   upstreams: Array<{
     name: string;
     displayName: string;
@@ -76,6 +85,8 @@ const fallbackState: State = {
   tasks: [],
   events: [],
   routerMetrics: { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },
+  serviceHealth: [],
+  brainMemory: { ok: false, agentCount: 0, entries: 0 },
   upstreams: [],
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
@@ -163,6 +174,25 @@ function App() {
           <Metric icon={<Users />} label="Agents online" value={`${state.agents.length}`} />
           <Metric icon={<GitBranch />} label="Active tasks" value={`${activeTasks}`} />
           <Metric icon={<RadioTower />} label="Router cost" value={money(state.routerMetrics.costUsd)} />
+        </section>
+
+        <section className="serviceStrip">
+          {state.serviceHealth.map((service) => (
+            <article className="servicePill" key={service.name}>
+              <div>
+                <strong>{service.name}</strong>
+                <span>{service.status ?? "offline"} · {service.latencyMs ?? 0}ms</span>
+              </div>
+              <Status value={service.ok ? "online" : "error"} />
+            </article>
+          ))}
+          <article className="servicePill">
+            <div>
+              <strong>hermes memory</strong>
+              <span>{state.brainMemory.entries} notes · {state.brainMemory.agentCount} agents</span>
+            </div>
+            <Status value={state.brainMemory.ok ? "online" : "error"} />
+          </article>
         </section>
 
         <section className="grid">
@@ -294,6 +324,7 @@ function App() {
                     <strong>{upstream.displayName}</strong>
                     <span>{upstream.packageName ?? upstream.name} {upstream.version ? `· v${upstream.version}` : ""}</span>
                     <small>{upstream.prefix}</small>
+                    <small>{upstream.configuredUrl}</small>
                     <a href={upstream.defaultUrl} target="_blank" rel="noreferrer">{upstream.defaultUrl}</a>
                   </div>
                   <Status value={upstream.present ? "present" : "error"} />

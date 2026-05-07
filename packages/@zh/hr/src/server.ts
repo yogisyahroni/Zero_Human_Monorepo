@@ -24,6 +24,15 @@ const routerMetrics = { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0
 const bus = new RedisEventBus(config.infrastructure.redis_url, "hr");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
+type ServiceHealth = {
+  name: string;
+  url: string;
+  ok: boolean;
+  status?: number;
+  latencyMs?: number;
+  error?: string;
+  details?: unknown;
+};
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
@@ -68,6 +77,63 @@ function upstreamStatus() {
   });
 }
 
+async function fetchJson(url: string): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(2500) });
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = contentType.includes("application/json") ? await response.json() : await response.text();
+  return { status: response.status, body };
+}
+
+async function checkService(name: string, baseUrl: string, healthPath: string): Promise<ServiceHealth> {
+  const started = Date.now();
+  const url = `${baseUrl.replace(/\/$/, "")}${healthPath}`;
+  try {
+    const { status, body } = await fetchJson(url);
+    return {
+      name,
+      url,
+      ok: status >= 200 && status < 400,
+      status,
+      latencyMs: Date.now() - started,
+      details: body
+    };
+  } catch (error) {
+    return {
+      name,
+      url,
+      ok: false,
+      latencyMs: Date.now() - started,
+      error: (error as Error).message
+    };
+  }
+}
+
+async function serviceHealth(): Promise<ServiceHealth[]> {
+  const services = config.infrastructure.services;
+  if (!services) return [];
+  return Promise.all([
+    checkService("router-adapter", services.router_url, "/health"),
+    checkService("brain-adapter", services.brain_url, "/health"),
+    checkService("paperclip", services.hr_url, "/api/health")
+  ]);
+}
+
+async function brainMemoryStatus(): Promise<{ ok: boolean; agentCount: number; entries: number; error?: string }> {
+  const brainUrl = config.infrastructure.services?.brain_url;
+  if (!brainUrl) return { ok: false, agentCount: 0, entries: 0, error: "Brain URL is not configured" };
+  try {
+    const { body } = await fetchJson(`${brainUrl.replace(/\/$/, "")}/api/memory`);
+    const memory = body as Record<string, string[]>;
+    return {
+      ok: true,
+      agentCount: Object.keys(memory).length,
+      entries: Object.values(memory).reduce((sum, notes) => sum + notes.length, 0)
+    };
+  } catch (error) {
+    return { ok: false, agentCount: 0, entries: 0, error: (error as Error).message };
+  }
+}
+
 bus.on("*", (message) => addEvent(message.event, `${message.metadata.source} published ${message.event}`));
 bus.on<Task>(ZHEvent.TASK_STARTED, (message) => {
   const task = tasks.get(message.payload.id) ?? tasks.get((message.payload as unknown as { taskId: string }).taskId);
@@ -110,9 +176,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "@zh/hr", redis: bus.connected });
 });
 
-app.get("/api/state", (_req, res) => {
+app.get("/api/state", async (_req, res) => {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
   const spent = Array.from(agents.values()).reduce((sum, agent) => sum + agent.costAccumulatedUsd, 0) + routerMetrics.costUsd;
+  const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
   res.json({
     company: config.company,
     infrastructure: {
@@ -125,6 +192,8 @@ app.get("/api/state", (_req, res) => {
     tasks: Array.from(tasks.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     events,
     routerMetrics,
+    serviceHealth: health,
+    brainMemory: memory,
     upstreams: upstreamStatus(),
     budget: {
       global: config.company.budget_usd,

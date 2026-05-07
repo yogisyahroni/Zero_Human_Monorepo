@@ -105,6 +105,33 @@ h2 {
   gap: 12px;
   margin-bottom: 12px;
 }
+.serviceStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.servicePill {
+  min-height: 76px;
+  border: 1px solid var(--line);
+  background: rgba(25,28,27,.92);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.servicePill strong {
+  display: block;
+  text-transform: capitalize;
+}
+.servicePill span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 5px;
+}
 .metric {
   min-height: 112px;
   border: 1px solid var(--line);
@@ -217,7 +244,7 @@ textarea {
 .status.reviewing, .status.pending_review { border-color: var(--accent); color: var(--accent); }
 .status.error { border-color: var(--danger); color: var(--danger); }
 .status.done, .status.idle { border-color: #8aa878; color: #c4ef98; }
-.status.present { border-color: var(--accent); color: var(--accent); }
+.status.present, .status.online { border-color: var(--accent); color: var(--accent); }
 .events ol {
   margin: 0;
   padding: 0;
@@ -271,7 +298,7 @@ textarea {
   .shell { grid-template-columns: 1fr; }
   .rail { display: none; }
   .workspace { padding: 18px; }
-  .metrics, .grid { grid-template-columns: 1fr; }
+  .metrics, .serviceStrip, .grid { grid-template-columns: 1fr; }
   .tasks { grid-column: auto; }
   .topbar { flex-direction: column; }
   .taskRow { grid-template-columns: 1fr; }
