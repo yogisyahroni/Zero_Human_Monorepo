@@ -67,6 +67,9 @@ only call 9Router through internal URLs. Environment provider keys in `.env`
 are bootstrap/fallback values for 9Router, not separate provider configuration
 for every service.
 
+Codex CLI is the default coding executor for real worktree edits. See
+`docs/CODEX_SETUP.md` for container setup and smoke-test steps.
+
 The three upstream projects run as independent Docker services. Zero-Human
 adapter services run alongside them and communicate through Redis plus the
 configured service URLs.

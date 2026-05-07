@@ -227,13 +227,26 @@ async function writeFallbackArtifact(task: Task, executionNote: string, reason: 
 
 async function runCodexExecutor(prompt: string, worktreePath: string): Promise<string | null> {
   if (!(await executableAvailable("codex"))) return null;
-  return runProcess("codex", [
+  const codexBaseUrl = process.env.CODEX_OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL ?? "http://9router:20128/v1";
+  const args = [
+    "-c",
+    `openai_base_url=${JSON.stringify(codexBaseUrl)}`,
+    "--sandbox",
+    "danger-full-access",
+    "--ask-for-approval",
+    "never",
     "exec",
-    "--full-auto",
-    "--skip-git-repo-check",
-    prompt
+    "--skip-git-repo-check"
+  ];
+  if (process.env.CODEX_MODEL) {
+    args.push("--model", process.env.CODEX_MODEL);
+  }
+  args.push(prompt);
+  return runProcess("codex", [
+    ...args
   ], worktreePath, {
-    CODEX_HOME: process.env.CODEX_HOME ?? "/root/.codex"
+    CODEX_HOME: process.env.CODEX_HOME ?? "/root/.codex",
+    OPENAI_API_KEY: process.env.CODEX_API_KEY ?? process.env.OPENAI_API_KEY ?? "sk_9router"
   });
 }
 

@@ -178,8 +178,13 @@ services:
       ZH_ROUTER_URL: http://zh-router-adapter:20129
       ZH_BRAIN_URL: http://hermes:9119
       ZH_WORKTREE_BASE: /app/worktrees
+      CODEX_HOME: /root/.codex
+      CODEX_OPENAI_BASE_URL: http://9router:20128/v1
+      CODEX_API_KEY: ${ZH_ROUTER_COMPAT_API_KEY:-sk_9router}
+      CODEX_MODEL: ${CODEX_MODEL:-}
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     volumes:
+      - codex-home:/root/.codex
       - brain-memory:/root/.hermes
       - hr-worktrees:/app/worktrees
       - worktree-source:/app/worktree-source
@@ -239,6 +244,7 @@ volumes:
   brain-memory:
   paperclip-pgdata:
   paperclip-data:
+  codex-home:
   hr-worktrees:
   worktree-source:
 

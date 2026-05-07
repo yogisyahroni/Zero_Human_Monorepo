@@ -53,7 +53,7 @@ agents:
     brain: "hermes"
     memory: "persistent"
     model_combo: "premium_stack"
-    executor: "claude-code"
+    executor: "codex"
     max_budget_usd: 40
     skills:
       - "architecture"
@@ -65,7 +65,7 @@ agents:
     brain: "hermes"
     memory: "persistent"
     model_combo: "cheap_stack"
-    executor: "claude-code"
+    executor: "codex"
     max_budget_usd: 30
     skills:
       - "api_design"
