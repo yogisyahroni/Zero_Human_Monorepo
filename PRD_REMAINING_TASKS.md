@@ -19,6 +19,7 @@ Done:
 - GitHub upstream sync workflow exists at `.github/workflows/upstream-sync.yml`.
 - Real executor v1: HR creates isolated git worktrees from an internal Docker clone, Brain writes executor artifacts, captures changed files, and runs validation.
 - Approval v1: diff endpoint, approve commit/merge into internal source clone, and reject cleanup endpoints.
+- Persistent Brain memory v1: notes, task outcomes, and skill confidence are stored in the `brain-memory` volume and shown in the dashboard.
 
 ## Priority 1: Real Executor Flow
 
@@ -62,15 +63,16 @@ Acceptance criteria:
 Goal: make memory and skills useful beyond the current telemetry counter.
 
 Tasks:
-- [ ] Persist Brain memory to the mounted `brain-memory` volume.
-- [ ] Store task outcomes by agent, skill, files touched, and validation result.
-- [ ] Feed recent memory into future task prompts.
-- [ ] Track skill confidence from repeated successful task types.
-- [ ] Show per-agent memory notes and learned skills in dashboard.
-- [ ] Publish richer `zh:skill:learned` payload with before/after timing.
+- [x] Persist Brain memory to the mounted `brain-memory` volume.
+- [x] Store task outcomes by agent, skill, files touched, and validation result.
+- [x] Feed recent memory into future task prompts.
+- [x] Track skill confidence from repeated successful task types.
+- [x] Show per-agent memory notes and learned skills in dashboard.
+- [x] Publish richer `zh:skill:learned` payload with before/after timing.
+- [ ] Replace the current JSON memory store with Hermes-native memory APIs when upstream exposes a stable task/memory contract.
 
 Acceptance criteria:
-- Restarting containers does not erase agent memory.
+- Restarting Brain does not erase agent memory.
 - Repeated tasks show increasing skill history.
 - Brain uses prior task notes in router prompt.
 

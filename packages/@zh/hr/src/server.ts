@@ -40,6 +40,16 @@ type ServiceHealth = {
   error?: string;
   details?: unknown;
 };
+type BrainMemorySummary = {
+  ok: boolean;
+  agentCount: number;
+  entries: number;
+  outcomes: number;
+  skills: Array<{ agentId: string; skill: string; runs: number; confidence: number; averageDurationMs?: number; updatedAt: string }>;
+  recentNotes: Array<{ agentId: string; note: string }>;
+  error?: string;
+};
+type BrainSkillSummary = BrainMemorySummary["skills"][number];
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
@@ -248,19 +258,32 @@ async function serviceHealth(): Promise<ServiceHealth[]> {
   ]);
 }
 
-async function brainMemoryStatus(): Promise<{ ok: boolean; agentCount: number; entries: number; error?: string }> {
+async function brainMemoryStatus(): Promise<BrainMemorySummary> {
   const brainUrl = config.infrastructure.services?.brain_url;
-  if (!brainUrl) return { ok: false, agentCount: 0, entries: 0, error: "Brain URL is not configured" };
+  if (!brainUrl) return { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [], error: "Brain URL is not configured" };
   try {
     const { body } = await fetchJson(`${brainUrl.replace(/\/$/, "")}/api/memory`);
-    const memory = body as Record<string, string[]>;
+    const memory = body as {
+      notes?: Record<string, string[]>;
+      outcomes?: unknown[];
+      skills?: BrainSkillSummary[];
+    };
+    const legacyMemory = body as Record<string, string[]>;
+    const notes: Record<string, string[]> = memory.notes ?? legacyMemory;
+    const skills: BrainSkillSummary[] = Array.isArray(memory.skills) ? memory.skills : [];
+    const outcomes = Array.isArray(memory.outcomes) ? memory.outcomes.length : 0;
     return {
       ok: true,
-      agentCount: Object.keys(memory).length,
-      entries: Object.values(memory).reduce((sum, notes) => sum + notes.length, 0)
+      agentCount: Object.keys(notes).length,
+      entries: Object.values(notes).reduce((sum, agentNotes) => sum + agentNotes.length, 0),
+      outcomes,
+      skills,
+      recentNotes: Object.entries(notes).flatMap(([agentId, agentNotes]) =>
+        agentNotes.slice(0, 2).map((note: string) => ({ agentId, note }))
+      ).slice(0, 8)
     };
   } catch (error) {
-    return { ok: false, agentCount: 0, entries: 0, error: (error as Error).message };
+    return { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [], error: (error as Error).message };
   }
 }
 
@@ -303,11 +326,11 @@ bus.on<{ agentId: string }>(ZHEvent.AGENT_READY, (message) => {
   const agent = agents.get(message.payload.agentId);
   if (agent && agent.status !== "paused") agent.status = "idle";
 });
-bus.on<{ agentId: string; skill: string; taskId?: string; confidence?: number }>(ZHEvent.SKILL_LEARNED, (message) => {
+bus.on<{ agentId: string; skill: string; taskId?: string; confidence?: number; afterConfidence?: number; runs?: number }>(ZHEvent.SKILL_LEARNED, (message) => {
   const key = `${message.payload.agentId}:${message.payload.skill}`;
   const existing = skillProgress.get(key);
-  const runs = (existing?.runs ?? 0) + 1;
-  const confidence = Number((((existing?.confidence ?? 0.55) + (message.payload.confidence ?? 0.65)) / 2).toFixed(2));
+  const runs = message.payload.runs ?? (existing?.runs ?? 0) + 1;
+  const confidence = message.payload.afterConfidence ?? Number((((existing?.confidence ?? 0.55) + (message.payload.confidence ?? 0.65)) / 2).toFixed(2));
   skillProgress.set(key, {
     agentId: message.payload.agentId,
     skill: message.payload.skill,

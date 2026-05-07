@@ -305,6 +305,25 @@ textarea {
   display: grid;
   gap: 10px;
 }
+.memoryList {
+  display: grid;
+  gap: 10px;
+}
+.memoryNote {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+}
+.memoryNote strong {
+  display: block;
+  margin-bottom: 6px;
+}
+.memoryNote span {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .skillCard {
   border: 1px solid var(--line);
   background: var(--panel-2);

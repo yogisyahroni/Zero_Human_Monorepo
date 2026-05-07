@@ -72,7 +72,15 @@ type State = {
     latencyMs?: number;
     error?: string;
   }>;
-  brainMemory: { ok: boolean; agentCount: number; entries: number; error?: string };
+  brainMemory: {
+    ok: boolean;
+    agentCount: number;
+    entries: number;
+    outcomes: number;
+    skills: Array<{ agentId: string; skill: string; runs: number; confidence: number; averageDurationMs?: number; updatedAt: string }>;
+    recentNotes: Array<{ agentId: string; note: string }>;
+    error?: string;
+  };
   upstreams: Array<{
     name: string;
     displayName: string;
@@ -101,7 +109,7 @@ const fallbackState: State = {
   routerMetrics: { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },
   skillProgress: [],
   serviceHealth: [],
-  brainMemory: { ok: false, agentCount: 0, entries: 0 },
+  brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
   upstreams: [],
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
@@ -223,7 +231,7 @@ function App() {
           <article className="servicePill">
             <div>
               <strong>hermes memory</strong>
-              <span>{state.brainMemory.entries} notes · {state.brainMemory.agentCount} agents</span>
+              <span>{state.brainMemory.entries} notes · {state.brainMemory.outcomes} outcomes</span>
             </div>
             <Status value={state.brainMemory.ok ? "online" : "error"} />
           </article>
@@ -339,6 +347,25 @@ function App() {
                     <span>{Math.round(skill.confidence * 100)}%</span>
                     <div><i style={{ width: `${Math.round(skill.confidence * 100)}%` }} /></div>
                   </div>
+                </article>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel memory">
+            <div className="panelHead">
+              <div>
+                <h2>Persistent memory</h2>
+                <p>Recent Brain notes from the mounted memory volume.</p>
+              </div>
+              <Brain size={20} />
+            </div>
+            <div className="memoryList">
+              {state.brainMemory.recentNotes.length === 0 && <div className="empty">No memory notes persisted yet.</div>}
+              {state.brainMemory.recentNotes.map((item, index) => (
+                <article className="memoryNote" key={`${item.agentId}-${index}`}>
+                  <strong>{item.agentId}</strong>
+                  <span>{item.note}</span>
                 </article>
               ))}
             </div>
