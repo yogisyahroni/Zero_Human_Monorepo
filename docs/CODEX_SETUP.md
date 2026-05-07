@@ -77,10 +77,16 @@ Current defaults:
 Optional model override:
 
 ```env
-CODEX_MODEL=gpt-5.3-codex
+CODEX_MODEL=combotest
 ```
 
-Leave `CODEX_MODEL` empty to use the Codex CLI default.
+By default the Docker stack uses the 9Router combo model name `combotest`.
+Any 9Router combo name can be used as a model id, for example `free_stack`,
+`cheap_stack`, or a combo you create in the 9Router UI.
+
+In Paperclip onboarding, keep `Model: Default` if your 9Router combo is named
+`combotest`. If you use another combo name, select or enter that combo name as
+the Paperclip Codex model.
 
 ## Smoke Test
 
