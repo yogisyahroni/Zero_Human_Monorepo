@@ -1,0 +1,59 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream:
+          - { name: router, repo: NousResearch/9Router, branch: main }
+          - { name: brain, repo: NousResearch/hermes-agent, branch: main }
+          - { name: hr, repo: paperclipai/paperclip, branch: main }
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Pull upstream subtree
+        run: |
+          git subtree pull \
+            --prefix=packages/@zh/${{ matrix.upstream.name }} \
+            https://github.com/${{ matrix.upstream.repo }}.git \
+            ${{ matrix.upstream.branch }} \
+            --squash
+
+      - name: Apply custom patches
+        run: |
+          for patch in patches/${{ matrix.upstream.name }}/*.patch; do
+            [ -f "$patch" ] || continue
+            git apply "$patch" || echo "PATCH_FAILED: $patch" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Build package
+        run: |
+          pnpm install --frozen-lockfile=false
+          pnpm --filter @zh/sdk build
+          pnpm --filter @zh/${{ matrix.upstream.name }} build
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: "sync(upstream): ${{ matrix.upstream.name }} update"
+          body: "Automated upstream sync. Review patch conflicts before merge."
+          branch: "sync/${{ matrix.upstream.name }}-${{ github.run_id }}"

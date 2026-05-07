@@ -1,0 +1,96 @@
+version: "1.0"
+
+company:
+  name: "Zero-Human Studio"
+  description: "Autonomous dev agency"
+  budget_usd: 100
+  currency: "USD"
+
+infrastructure:
+  redis_url: "${REDIS_URL:-redis://localhost:6379}"
+  docker_socket: "/var/run/docker.sock"
+  worktree_base: "./worktrees"
+
+gateway:
+  port: 20128
+  host: "0.0.0.0"
+  rtk_token_saver: true
+  caveman_mode: true
+  log_level: "info"
+  providers:
+    anthropic:
+      api_key: "${ANTHROPIC_API_KEY}"
+      priority: 1
+    openrouter:
+      api_key: "${OPENROUTER_API_KEY}"
+      priority: 2
+    glm:
+      api_key: "${GLM_API_KEY}"
+      priority: 3
+  combos:
+    premium_stack:
+      - provider: anthropic
+        model: claude-opus-4
+      - provider: openrouter
+        model: claude-sonnet-4
+    cheap_stack:
+      - provider: glm
+        model: glm-5.1
+      - provider: openrouter
+        model: gpt-4.1-mini
+    free_stack:
+      - provider: kiro
+        model: claude-sonnet-4.5
+        auth: "none"
+
+agents:
+  cto:
+    role: "cto"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "premium_stack"
+    executor: "claude-code"
+    max_budget_usd: 40
+    skills:
+      - "architecture"
+      - "system_design"
+      - "code_review"
+    schedule: null
+  backend_lead:
+    role: "backend"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "cheap_stack"
+    executor: "claude-code"
+    max_budget_usd: 30
+    skills:
+      - "api_design"
+      - "database"
+      - "testing"
+    schedule: null
+  maintenance_bot:
+    role: "devops"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "free_stack"
+    executor: "bash"
+    max_budget_usd: 5
+    skills:
+      - "dependency_updates"
+      - "health_checks"
+    schedule: "0 2 * * *"
+
+orchestrator:
+  port: 3000
+  host: "0.0.0.0"
+  approval_required: true
+  approval_threshold_usd: 5.0
+  auto_merge: false
+  log_level: "info"
+
+notifications:
+  webhook_url: "${DISCORD_WEBHOOK_URL}"
+  events:
+    - "zh:task:completed"
+    - "zh:cost:threshold"
+    - "zh:agent:error"

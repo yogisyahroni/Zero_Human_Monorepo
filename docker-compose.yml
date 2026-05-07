@@ -1,0 +1,72 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - zh-network
+
+  router:
+    build:
+      context: .
+      args:
+        SERVICE: router
+    environment:
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+    ports:
+      - "20128:20128"
+    depends_on:
+      - redis
+    networks:
+      - zh-network
+
+  brain:
+    build:
+      context: .
+      args:
+        SERVICE: brain
+    environment:
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - brain-memory:/root/.hermes
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis
+      - router
+    networks:
+      - zh-network
+
+  hr:
+    build:
+      context: .
+      args:
+        SERVICE: hr
+    environment:
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    volumes:
+      - hr-worktrees:/app/worktrees
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis
+      - brain
+      - router
+    networks:
+      - zh-network
+
+volumes:
+  redis-data:
+  brain-memory:
+  hr-worktrees:
+
+networks:
+  zh-network:
+    driver: bridge
