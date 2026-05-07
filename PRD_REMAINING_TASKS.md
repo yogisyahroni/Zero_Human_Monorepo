@@ -99,18 +99,19 @@ Acceptance criteria:
 Goal: make upstream updates reviewable and repeatable.
 
 Tasks:
-- [ ] Create `patches/router`, `patches/brain`, and `patches/hr` patch marker files.
-- [ ] Add script to regenerate patch files from local integration changes.
-- [ ] Add CI summary for failed patch apply.
-- [ ] Add sync dry-run mode.
-- [ ] Document the real upstream replacements currently used:
+- [x] Create `patches/router`, `patches/brain`, and `patches/hr` patch marker files.
+- [x] Add script to regenerate patch files from local integration changes.
+- [x] Add CI summary for failed patch apply.
+- [x] Add sync dry-run mode.
+- [x] Document the real upstream replacements currently used:
   - `decolua/9router`
   - `NousResearch/hermes-agent`
   - `paperclipai/paperclip`
+- [ ] Add automated dry-run sync check to CI without opening a PR.
 
 Acceptance criteria:
 - Weekly sync creates a PR when upstream changes.
-- Patch failures are visible in GitHub summary.
+- Patch failures are visible in GitHub summary and fail the workflow.
 - Local developer can run dry-run sync without mutating main branch.
 
 ## Priority 6: Production Security
@@ -119,10 +120,10 @@ Goal: reduce Docker socket risk before any production-like usage.
 
 Tasks:
 - [ ] Replace raw Docker socket mount with restricted Docker API proxy or DinD.
-- [ ] Move secrets to `.env` and document required keys.
-- [ ] Add secret scanning notes for upstream subtree updates.
-- [ ] Add service-level healthchecks to `docker-compose.yml`.
-- [ ] Add backup/restore notes for Redis, Paperclip DB, and Brain memory volumes.
+- [x] Move secrets to `.env` and document required keys.
+- [x] Add secret scanning notes for upstream subtree updates.
+- [x] Add service-level healthchecks to `docker-compose.yml`.
+- [x] Add backup/restore notes for Redis, Paperclip DB, and Brain memory volumes.
 
 Acceptance criteria:
 - Executors cannot access host Docker unrestricted.

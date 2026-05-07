@@ -101,4 +101,16 @@ Sync one upstream:
 .\scripts\sync-upstream.ps1 hr
 ```
 
+Dry-run a sync without keeping changes:
+
+```powershell
+.\scripts\sync-upstream.ps1 router -DryRun
+```
+
+Regenerate a patch from local upstream edits:
+
+```powershell
+.\scripts\regenerate-patches.ps1 router -Name docker-healthcheck
+```
+
 Keep custom integration in `@zh/sdk`, package adapter `src/`, and patch folders so upstream syncs remain reviewable.

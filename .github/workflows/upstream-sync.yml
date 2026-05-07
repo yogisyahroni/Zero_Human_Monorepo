@@ -39,11 +39,21 @@ jobs:
             --squash
 
       - name: Apply custom patches
+        id: patches
         run: |
+          failed=0
           for patch in patches/${{ matrix.upstream.name }}/*.patch; do
             [ -f "$patch" ] || continue
-            git apply "$patch" || echo "PATCH_FAILED: $patch" >> "$GITHUB_STEP_SUMMARY"
+            if git apply "$patch"; then
+              echo "APPLIED: $patch" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "PATCH_FAILED: $patch" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+            fi
           done
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Build package
         run: |
@@ -52,8 +62,16 @@ jobs:
           pnpm --filter @zh/${{ matrix.upstream.name }} build
 
       - name: Create PR
+        if: success()
         uses: peter-evans/create-pull-request@v6
         with:
           title: "sync(upstream): ${{ matrix.upstream.name }} update"
-          body: "Automated upstream sync. Review patch conflicts before merge."
+          body: |
+            Automated upstream sync for `${{ matrix.upstream.name }}`.
+
+            Review checklist:
+            - Confirm subtree diff is expected.
+            - Confirm patch queue applied cleanly.
+            - Confirm adapter build passed.
+            - Run Docker smoke flow before merge when upstream runtime changed.
           branch: "sync/${{ matrix.upstream.name }}-${{ github.run_id }}"

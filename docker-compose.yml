@@ -10,6 +10,11 @@ services:
       - redis-data:/data
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   9router:
     build:
@@ -30,6 +35,11 @@ services:
       - router-data:/app/data
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:20128/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
 
   hermes:
     build:
@@ -51,6 +61,11 @@ services:
       - 9router
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9119 >/dev/null"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
 
   paperclip-db:
     image: postgres:17-alpine
@@ -104,6 +119,11 @@ services:
         condition: service_started
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
 
   zh-router-adapter:
     build:
@@ -120,6 +140,11 @@ services:
       - 9router
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:20129/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   zh-brain-adapter:
     build:
@@ -144,6 +169,11 @@ services:
       - hermes
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   zero-human:
     build:
@@ -174,6 +204,11 @@ services:
       - paperclip
     networks:
       - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3003/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 volumes:
   redis-data:
