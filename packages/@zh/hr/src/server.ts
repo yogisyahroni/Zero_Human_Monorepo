@@ -80,6 +80,7 @@ type RegisteredRepository = {
   url: string;
   branch: string;
   path: string;
+  sourceKind?: "work" | "skill_source";
   authType?: "none" | "https-token" | "ssh-key";
   username?: string;
   token?: string;
@@ -189,6 +190,7 @@ function defaultRepository(): RegisteredRepository {
     url: hostRepoPath,
     branch: "main",
     path: sourceRepoPath,
+    sourceKind: "work",
     status: "ready",
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString()
@@ -1179,10 +1181,11 @@ app.get("/api/state", async (_req, res) => {
 });
 
 app.post("/api/repositories", async (req, res) => {
-  const { name, url, branch, authType, username, token, sshPrivateKey } = (req.body ?? {}) as {
+  const { name, url, branch, authType, username, token, sshPrivateKey, sourceKind } = (req.body ?? {}) as {
     name?: string;
     url?: string;
     branch?: string;
+    sourceKind?: "work" | "skill_source";
     authType?: "none" | "https-token" | "ssh-key";
     username?: string;
     token?: string;
@@ -1192,6 +1195,7 @@ app.post("/api/repositories", async (req, res) => {
   const repoName = name?.trim() || repoUrl.split(/[\/:]/).pop()?.replace(/\.git$/, "") || "Repository";
   const repoBranch = branch?.trim() || "main";
   const repoAuthType = authType ?? "none";
+  const repoSourceKind = sourceKind === "skill_source" ? "skill_source" : "work";
   if (!isCloneableRepositoryUrl(repoUrl)) {
     return res.status(400).json({ error: "Repository URL must be a Git URL, for example https://github.com/org/repo.git" });
   }
@@ -1215,7 +1219,8 @@ app.post("/api/repositories", async (req, res) => {
     name: repoName,
     url: repoUrl,
     branch: repoBranch,
-    path: path.join(repositoryBasePath, id),
+    path: repoSourceKind === "skill_source" ? path.join(repositoryBasePath, "skill-sources", id) : path.join(repositoryBasePath, id),
+    sourceKind: repoSourceKind,
     authType: repoAuthType,
     username: username?.trim() || undefined,
     token: repoAuthType === "https-token" ? token : undefined,
@@ -1228,7 +1233,7 @@ app.post("/api/repositories", async (req, res) => {
   saveRepositories();
   const synced = await syncRegisteredRepository(repository);
   if (synced.status === "error") return res.status(502).json(publicRepository(synced));
-  addEvent("zh:repository:registered", `Registered ${synced.name}`);
+  addEvent(repoSourceKind === "skill_source" ? "zh:skill-source:registered" : "zh:repository:registered", `Registered ${synced.name}`);
   res.status(201).json(publicRepository(synced));
 });
 

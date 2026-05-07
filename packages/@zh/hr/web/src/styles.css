@@ -450,6 +450,30 @@ textarea {
   display: grid;
   gap: 10px;
 }
+.repoHint {
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+.sourceIntake {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+.sourceDivider {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 12px;
+}
+.sourceDivider span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.sourceRow {
+  border-color: rgba(100, 210, 200, .32);
+}
 
 .importReport {
   border: 1px solid var(--line);

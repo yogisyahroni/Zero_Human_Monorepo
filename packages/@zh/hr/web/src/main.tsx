@@ -65,6 +65,7 @@ type RegisteredRepository = {
   url: string;
   branch: string;
   path: string;
+  sourceKind?: "work" | "skill_source";
   authType?: "none" | "https-token" | "ssh-key";
   username?: string;
   status: "ready" | "syncing" | "error";
@@ -254,12 +255,24 @@ function App() {
     name: "",
     url: "",
     branch: "main",
+    sourceKind: "work" as "work" | "skill_source",
+    authType: "none" as "none" | "https-token" | "ssh-key",
+    username: "",
+    token: "",
+    sshPrivateKey: ""
+  });
+  const [skillSourceDraft, setSkillSourceDraft] = useState({
+    name: "",
+    url: "",
+    branch: "main",
+    sourceKind: "skill_source" as "work" | "skill_source",
     authType: "none" as "none" | "https-token" | "ssh-key",
     username: "",
     token: "",
     sshPrivateKey: ""
   });
   const [repoError, setRepoError] = useState("");
+  const [skillSourceError, setSkillSourceError] = useState("");
   const [skillImportDraft, setSkillImportDraft] = useState({ repositoryId: "default", path: "" });
   const [skillImportError, setSkillImportError] = useState("");
   const [latestSkillImport, setLatestSkillImport] = useState<SkillImportReport | null>(null);
@@ -310,12 +323,20 @@ function App() {
   const registryEntries = Object.entries(state.skillRegistry);
   const registryCategories = Array.from(new Set(registryEntries.map(([, skill]) => skill.category))).sort();
   const pendingHiring = state.hiringRequests.filter((request) => request.status === "pending_approval");
+  const workRepositories = state.repositories.filter((repo) => (repo.sourceKind ?? "work") === "work");
+  const skillSourceRepositories = state.repositories.filter((repo) => repo.sourceKind === "skill_source");
 
   useEffect(() => {
-    if (!state.repositories.some((repo) => repo.id === skillImportDraft.repositoryId)) {
-      setSkillImportDraft((current) => ({ ...current, repositoryId: state.repositories[0]?.id ?? "default" }));
+    if (!workRepositories.some((repo) => repo.id === repositoryId)) {
+      setRepositoryId(workRepositories[0]?.id ?? "default");
     }
-  }, [skillImportDraft.repositoryId, state.repositories]);
+  }, [repositoryId, workRepositories]);
+
+  useEffect(() => {
+    if (!skillSourceRepositories.some((repo) => repo.id === skillImportDraft.repositoryId)) {
+      setSkillImportDraft((current) => ({ ...current, repositoryId: skillSourceRepositories[0]?.id ?? "" }));
+    }
+  }, [skillImportDraft.repositoryId, skillSourceRepositories]);
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -382,14 +403,34 @@ function App() {
     const response = await fetch("/api/repositories", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(repoDraft)
+      body: JSON.stringify({ ...repoDraft, sourceKind: "work" })
     });
     const body = await response.json();
     if (!response.ok) {
       setRepoError(body.error ?? body.error ?? "Failed to register repository");
     } else {
       setRepositoryId(body.id);
-      setRepoDraft({ name: "", url: "", branch: "main", authType: "none", username: "", token: "", sshPrivateKey: "" });
+      setRepoDraft({ name: "", url: "", branch: "main", sourceKind: "work", authType: "none", username: "", token: "", sshPrivateKey: "" });
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function addSkillSource(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setSkillSourceError("");
+    const response = await fetch("/api/repositories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...skillSourceDraft, sourceKind: "skill_source" })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setSkillSourceError(body.error ?? "Failed to register skill source");
+    } else {
+      setSkillImportDraft((current) => ({ ...current, repositoryId: body.id }));
+      setSkillSourceDraft({ name: "", url: "", branch: "main", sourceKind: "skill_source", authType: "none", username: "", token: "", sshPrivateKey: "" });
     }
     await refresh();
     setBusy(false);
@@ -513,7 +554,7 @@ function App() {
           <Metric icon={<Users />} label="Agents online" value={`${state.agents.length}`} />
           <Metric icon={<GitBranch />} label="Active tasks" value={`${activeTasks}`} />
           <Metric icon={<RadioTower />} label="Router cost" value={money(state.routerMetrics.costUsd)} />
-          <Metric icon={<FolderGit2 />} label="Repos ready" value={`${state.repositories.filter((repo) => repo.status === "ready").length}`} />
+          <Metric icon={<FolderGit2 />} label="Repos ready" value={`${workRepositories.filter((repo) => repo.status === "ready").length}`} />
         </section>
 
         {(activeView === "operations" || activeView === "gateway") && (
@@ -673,7 +714,7 @@ function App() {
             <label>
               Repository
               <select value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)}>
-                {state.repositories.map((repo) => <option value={repo.id} key={repo.id}>{repo.name} · {repo.branch}</option>)}
+                {workRepositories.map((repo) => <option value={repo.id} key={repo.id}>{repo.name} · {repo.branch}</option>)}
               </select>
             </label>
             <label>
@@ -791,7 +832,7 @@ function App() {
               {repoError && <p className="formWarning">{repoError}</p>}
             </form>
             <div className="repoList">
-              {state.repositories.map((repo) => (
+              {workRepositories.map((repo) => (
                 <article className="repoRow" key={repo.id}>
                   <div>
                     <strong>{repo.name}</strong>
@@ -808,6 +849,9 @@ function App() {
                 </article>
               ))}
             </div>
+            {skillSourceRepositories.length > 0 && (
+              <p className="repoHint">{skillSourceRepositories.length} skill source repo hidden from task assignment. Manage them in Memory.</p>
+            )}
           </div>
           )}
 
@@ -926,19 +970,95 @@ function App() {
           <div className="panel skillImport">
             <div className="panelHead">
               <div>
-                <h2>Repo skill import</h2>
-                <p>Scan SKILL.md files, skip duplicates, and map new skills into company roles.</p>
+                <h2>Skill sources</h2>
+                <p>Register knowledge repos here. They feed memory and never become task workspaces.</p>
               </div>
               <FolderGit2 size={20} />
             </div>
+            <form className="repoForm sourceIntake" onSubmit={addSkillSource}>
+              <label>
+                Source name
+                <input
+                  value={skillSourceDraft.name}
+                  placeholder="company-skillbook"
+                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                Git URL
+                <input
+                  value={skillSourceDraft.url}
+                  placeholder="https://github.com/org/skills.git"
+                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, url: event.target.value }))}
+                />
+              </label>
+              <label>
+                Branch
+                <input
+                  value={skillSourceDraft.branch}
+                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, branch: event.target.value }))}
+                />
+              </label>
+              <label>
+                Auth
+                <select
+                  value={skillSourceDraft.authType}
+                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, authType: event.target.value as typeof skillSourceDraft.authType }))}
+                >
+                  <option value="none">Public / no auth</option>
+                  <option value="https-token">HTTPS token</option>
+                  <option value="ssh-key">SSH private key</option>
+                </select>
+              </label>
+              {skillSourceDraft.authType === "https-token" && (
+                <>
+                  <label>
+                    Username
+                    <input
+                      value={skillSourceDraft.username}
+                      placeholder="x-access-token"
+                      onChange={(event) => setSkillSourceDraft((current) => ({ ...current, username: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Token
+                    <input
+                      type="password"
+                      value={skillSourceDraft.token}
+                      placeholder="GitHub PAT or GitLab token"
+                      onChange={(event) => setSkillSourceDraft((current) => ({ ...current, token: event.target.value }))}
+                    />
+                  </label>
+                </>
+              )}
+              {skillSourceDraft.authType === "ssh-key" && (
+                <label>
+                  SSH private key
+                  <textarea
+                    className="secretBox"
+                    value={skillSourceDraft.sshPrivateKey}
+                    placeholder="Paste the complete SSH private key here"
+                    onChange={(event) => setSkillSourceDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
+                  />
+                </label>
+              )}
+              <button disabled={busy || !skillSourceDraft.url.trim()}>
+                <Plus size={15} /> Add skill source
+              </button>
+              {skillSourceError && <p className="formWarning">{skillSourceError}</p>}
+            </form>
+            <div className="sourceDivider">
+              <strong>Import into memory</strong>
+              <span>Scan SKILL.md files, skip duplicates, and map new skills into company roles.</span>
+            </div>
             <form className="repoForm" onSubmit={importRepoSkills}>
               <label>
-                Repository
+                Skill source
                 <select
                   value={skillImportDraft.repositoryId}
                   onChange={(event) => setSkillImportDraft((current) => ({ ...current, repositoryId: event.target.value }))}
                 >
-                  {state.repositories.map((repo) => (
+                  {skillSourceRepositories.map((repo) => (
                     <option value={repo.id} key={repo.id}>{repo.name} · {repo.status}</option>
                   ))}
                 </select>
@@ -956,6 +1076,25 @@ function App() {
               </button>
               {skillImportError && <p className="formWarning">{skillImportError}</p>}
             </form>
+            <div className="repoList">
+              {skillSourceRepositories.length === 0 && <div className="empty">No skill source registered yet. Add a skill repo above first.</div>}
+              {skillSourceRepositories.map((repo) => (
+                <article className="repoRow sourceRow" key={repo.id}>
+                  <div>
+                    <strong>{repo.name}</strong>
+                    <span>{repo.branch} · {repo.authType ?? "none"} · skill source</span>
+                    <small className="monoPath">{repo.path}</small>
+                    {repo.error && <small className="repoError">{repo.error}</small>}
+                  </div>
+                  <div className="repoActions">
+                    <Status value={repo.status} />
+                    <button onClick={() => syncRepository(repo.id)} disabled={busy}>
+                      <RefreshCw size={15} /> Sync
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
             {(latestSkillImport ?? state.skillImports[0]) && (
               <article className="importReport">
                 <strong>{(latestSkillImport ?? state.skillImports[0]).repositoryName}</strong>
