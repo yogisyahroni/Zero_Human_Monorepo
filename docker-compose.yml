@@ -1,3 +1,5 @@
+name: zero-human
+
 services:
   redis:
     image: redis:7-alpine

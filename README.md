@@ -18,10 +18,40 @@ pnpm build
 pnpm dev:hr
 ```
 
-For the full microservices stack:
+For the full microservices stack, use the one-shot launcher:
 
 ```powershell
-docker compose up --build
+.\scripts\start-zero-human.ps1
+```
+
+Or via pnpm:
+
+```powershell
+pnpm stack:start
+```
+
+Stop everything:
+
+```powershell
+pnpm stack:stop
+```
+
+Check containers:
+
+```powershell
+pnpm stack:status
+```
+
+Follow logs:
+
+```powershell
+.\scripts\logs-zero-human.ps1 -Follow
+```
+
+Raw Docker Compose still works:
+
+```powershell
+docker compose -p zero-human up -d --build
 ```
 
 Open:
