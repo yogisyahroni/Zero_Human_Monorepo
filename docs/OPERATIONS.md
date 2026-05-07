@@ -18,6 +18,33 @@ the `zh-router-adapter`.
 contract for services that expect an OpenAI-style API. Real provider keys
 belong to 9Router.
 
+## 9Router Updates
+
+Do not use the in-app `Update now` button when 9Router runs inside Docker. The
+button performs a self-update intended for standalone installs and can stop the
+container process. In Docker, keep 9Router up to date by updating the upstream
+source in this repo and rebuilding the image:
+
+```powershell
+pnpm router:update
+```
+
+Manual equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/sync-upstream.ps1 router
+docker compose -p zero-human up -d --build 9router zh-router-adapter zh-brain-adapter zero-human
+```
+
+Verify the result:
+
+```powershell
+Invoke-RestMethod http://localhost:20128/api/version
+docker compose -p zero-human ps 9router
+```
+
+The expected version response should show `hasUpdate: false`.
+
 ## Secrets
 
 Keep secrets in `.env` or your deployment secret store. Do not commit `.env` files.

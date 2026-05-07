@@ -55,14 +55,14 @@ export const PROVIDERS = {
   gemini: {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
     format: "gemini",
-    clientId: "REDACTED_GOOGLE_OAUTH_CLIENT_ID",
-    clientSecret: "REDACTED_GOOGLE_OAUTH_CLIENT_SECRET"
+    clientId: process.env.GEMINI_OAUTH_CLIENT_ID || "",
+    clientSecret: process.env.GEMINI_OAUTH_CLIENT_SECRET || ""
   },
   "gemini-cli": {
     baseUrl: "https://cloudcode-pa.googleapis.com/v1internal",
     format: "gemini-cli",
-    clientId: "REDACTED_GOOGLE_OAUTH_CLIENT_ID",
-    clientSecret: "REDACTED_GOOGLE_OAUTH_CLIENT_SECRET"
+    clientId: process.env.GEMINI_OAUTH_CLIENT_ID || "",
+    clientSecret: process.env.GEMINI_OAUTH_CLIENT_SECRET || ""
   },
   codex: {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
@@ -106,8 +106,8 @@ export const PROVIDERS = {
     ],
     format: "antigravity",
     headers: { "User-Agent": `antigravity/1.107.0 ${platform()}/${arch()}` },
-    clientId: "REDACTED_GOOGLE_OAUTH_CLIENT_ID",
-    clientSecret: "REDACTED_GOOGLE_OAUTH_CLIENT_SECRET"
+    clientId: process.env.ANTIGRAVITY_OAUTH_CLIENT_ID || "",
+    clientSecret: process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || ""
   },
   openrouter: {
     baseUrl: "https://openrouter.ai/api/v1/chat/completions",

@@ -7,9 +7,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $map = @{
-  router = @{ Prefix = "packages/@zh/router/upstream"; Remote = "upstream-router"; Branch = "master" }
-  brain = @{ Prefix = "packages/@zh/brain/upstream"; Remote = "upstream-brain"; Branch = "main" }
-  hr = @{ Prefix = "packages/@zh/hr/upstream"; Remote = "upstream-hr"; Branch = "master" }
+  router = @{ Prefix = "packages/@zh/router/upstream"; Remote = "upstream-router"; Branch = "master"; Url = "https://github.com/decolua/9router.git" }
+  brain = @{ Prefix = "packages/@zh/brain/upstream"; Remote = "upstream-brain"; Branch = "main"; Url = "https://github.com/NousResearch/hermes-agent.git" }
+  hr = @{ Prefix = "packages/@zh/hr/upstream"; Remote = "upstream-hr"; Branch = "master"; Url = "https://github.com/paperclipai/paperclip.git" }
 }
 
 $target = $map[$Package]
@@ -25,6 +25,10 @@ if ($DryRun) {
 }
 
 try {
+if (-not (git remote get-url $target.Remote 2>$null)) {
+  Write-Host "Adding missing remote $($target.Remote): $($target.Url)"
+  git remote add $target.Remote $target.Url
+}
 git fetch $target.Remote
 git subtree pull --prefix=$($target.Prefix) $target.Remote $target.Branch --squash
 
