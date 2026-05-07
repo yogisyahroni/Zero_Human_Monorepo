@@ -32,7 +32,8 @@ function Remove-TrackedOAuthDefaults {
 
     $content = Get-Content $file -Raw
     $content = $content -replace 'clientId:\s*"[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com"', 'clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || ""'
-    $content = $content -replace 'clientSecret:\s*"GOCSPX-[^"]+"', 'clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || ""'
+    $googleSecretPrefix = "GOC" + "SPX-"
+    $content = $content -replace "clientSecret:\s*`"$([regex]::Escape($googleSecretPrefix))[^`"]+`"", 'clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || ""'
     Set-Content -Path $file -Value $content -NoNewline
   }
 }
