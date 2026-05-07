@@ -6,6 +6,7 @@ import {
   Brain,
   Check,
   CircuitBoard,
+  FolderGit2,
   Gauge,
   GitBranch,
   Play,
@@ -37,6 +38,9 @@ type Task = {
   description: string;
   priority: 1 | 2 | 3;
   status: string;
+  repositoryId?: string;
+  repositoryName?: string;
+  repositoryPath?: string;
   worktreePath?: string;
   branchName?: string;
   changedFiles?: string[];
@@ -49,6 +53,19 @@ type Task = {
   costAccumulated?: number;
   result?: string;
   createdAt: string;
+};
+
+type RegisteredRepository = {
+  id: string;
+  name: string;
+  url: string;
+  branch: string;
+  path: string;
+  status: "ready" | "syncing" | "error";
+  createdAt: string;
+  updatedAt: string;
+  lastSyncAt?: string;
+  error?: string;
 };
 
 type State = {
@@ -108,6 +125,7 @@ type State = {
     packageName: string | null;
     version: string | null;
   }>;
+  repositories: RegisteredRepository[];
   budget: { global: number; allocated: number; spent: number; currency: string };
   combos: Record<string, Array<{ provider: string; model: string }>>;
 };
@@ -125,6 +143,7 @@ const fallbackState: State = {
   serviceHealth: [],
   brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
   upstreams: [],
+  repositories: [],
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
 };
@@ -139,6 +158,9 @@ function App() {
   const [description, setDescription] = useState("Create an architecture plan for the authentication module.");
   const [type, setType] = useState("architecture");
   const [priority, setPriority] = useState<1 | 2 | 3>(2);
+  const [repositoryId, setRepositoryId] = useState("default");
+  const [repoDraft, setRepoDraft] = useState({ name: "", url: "", branch: "main" });
+  const [repoError, setRepoError] = useState("");
   const [busy, setBusy] = useState(false);
   const [diffs, setDiffs] = useState<Record<string, { status: string; diff: string }>>({});
   const [budgetDraft, setBudgetDraft] = useState<{ globalBudgetUsd: string; agentCaps: Record<string, string> }>({
@@ -197,9 +219,36 @@ function App() {
     await fetch("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agentId: selectedAgent, type, description, priority })
+      body: JSON.stringify({ agentId: selectedAgent, type, description, priority, repositoryId })
     });
     setDescription("");
+    await refresh();
+    setBusy(false);
+  }
+
+  async function addRepository(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setRepoError("");
+    const response = await fetch("/api/repositories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(repoDraft)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setRepoError(body.error ?? body.error ?? "Failed to register repository");
+    } else {
+      setRepositoryId(body.id);
+      setRepoDraft({ name: "", url: "", branch: "main" });
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function syncRepository(id: string) {
+    setBusy(true);
+    await fetch(`/api/repositories/${id}/sync`, { method: "POST" });
     await refresh();
     setBusy(false);
   }
@@ -268,6 +317,7 @@ function App() {
           <Metric icon={<Users />} label="Agents online" value={`${state.agents.length}`} />
           <Metric icon={<GitBranch />} label="Active tasks" value={`${activeTasks}`} />
           <Metric icon={<RadioTower />} label="Router cost" value={money(state.routerMetrics.costUsd)} />
+          <Metric icon={<FolderGit2 />} label="Repos ready" value={`${state.repositories.filter((repo) => repo.status === "ready").length}`} />
         </section>
 
         <section className="serviceStrip">
@@ -349,6 +399,12 @@ function App() {
               <Play size={20} />
             </div>
             <label>
+              Repository
+              <select value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)}>
+                {state.repositories.map((repo) => <option value={repo.id} key={repo.id}>{repo.name} · {repo.branch}</option>)}
+              </select>
+            </label>
+            <label>
               Agent
               <select value={selectedAgent} onChange={(event) => setSelectedAgent(event.target.value)}>
                 {state.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.id}</option>)}
@@ -379,6 +435,63 @@ function App() {
               <p className="formWarning">Budget protection paused this agent.</p>
             )}
           </form>
+
+          <div className="panel repositories">
+            <div className="panelHead">
+              <div>
+                <h2>Repository intake</h2>
+                <p>Clone a Git repository into the Docker workspace.</p>
+              </div>
+              <FolderGit2 size={20} />
+            </div>
+            <form className="repoForm" onSubmit={addRepository}>
+              <label>
+                Name
+                <input
+                  value={repoDraft.name}
+                  placeholder="client-webapp"
+                  onChange={(event) => setRepoDraft((current) => ({ ...current, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                Git URL
+                <input
+                  value={repoDraft.url}
+                  placeholder="https://github.com/org/repo.git"
+                  onChange={(event) => setRepoDraft((current) => ({ ...current, url: event.target.value }))}
+                />
+              </label>
+              <label>
+                Branch
+                <input
+                  value={repoDraft.branch}
+                  onChange={(event) => setRepoDraft((current) => ({ ...current, branch: event.target.value }))}
+                />
+              </label>
+              <button disabled={busy || !repoDraft.url.trim()}>
+                <Plus size={15} /> Add repo
+              </button>
+              {repoError && <p className="formWarning">{repoError}</p>}
+            </form>
+            <div className="repoList">
+              {state.repositories.map((repo) => (
+                <article className="repoRow" key={repo.id}>
+                  <div>
+                    <strong>{repo.name}</strong>
+                    <span>{repo.branch} · {repo.url}</span>
+                    <small className="monoPath">{repo.path}</small>
+                    {repo.error && <small className="repoError">{repo.error}</small>}
+                  </div>
+                  <div className="repoActions">
+                    <Status value={repo.status} />
+                    <button onClick={() => syncRepository(repo.id)} disabled={busy}>
+                      <RefreshCw size={15} /> Sync
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
 
           <div className="panel protection">
             <div className="panelHead">
@@ -489,6 +602,7 @@ function App() {
                   <div>
                     <strong>{task.description}</strong>
                     <span>{task.id} · {task.agentId} · P{task.priority}</span>
+                    {task.repositoryName && <span>{task.repositoryName}</span>}
                     {task.branchName && <span>{task.branchName}</span>}
                     {task.worktreePath && <small className="monoPath">{task.worktreePath}</small>}
                     {task.hostApplyStatus && (

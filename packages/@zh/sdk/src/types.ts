@@ -35,6 +35,9 @@ export interface Task {
   context?: string[];
   priority: 1 | 2 | 3;
   status: TaskStatus;
+  repositoryId?: string;
+  repositoryName?: string;
+  repositoryPath?: string;
   worktreePath?: string;
   branchName?: string;
   changedFiles?: string[];

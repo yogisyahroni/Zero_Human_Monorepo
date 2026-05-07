@@ -218,6 +218,7 @@ services:
       ZH_HR_URL: http://paperclip:3100
       ZH_REPO_PATH: /repo
       ZH_WORKTREE_SOURCE_PATH: /app/worktree-source
+      ZH_REPOSITORY_BASE: /app/repositories
       ZH_WORKTREE_BASE: /app/worktrees
       ZH_STATE_PATH: /repo/.zero-human/state
       DOCKER_HOST: tcp://docker-socket-proxy:2375
@@ -226,6 +227,7 @@ services:
     volumes:
       - hr-worktrees:/app/worktrees
       - worktree-source:/app/worktree-source
+      - registered-repos:/app/repositories
       - .:/repo
     depends_on:
       - redis
@@ -250,6 +252,7 @@ volumes:
   codex-home:
   hr-worktrees:
   worktree-source:
+  registered-repos:
 
 networks:
   zh-network:

@@ -42,8 +42,10 @@ const repoRoot = path.resolve(__dirname, "../../../..");
 const execFileAsync = promisify(execFile);
 const hostRepoPath = process.env.ZH_REPO_PATH ?? repoRoot;
 const sourceRepoPath = process.env.ZH_WORKTREE_SOURCE_PATH ?? hostRepoPath;
+const repositoryBasePath = process.env.ZH_REPOSITORY_BASE ?? path.join(path.dirname(sourceRepoPath), "repositories");
 const stateDir = process.env.ZH_STATE_PATH ?? path.join(hostRepoPath, ".zero-human", "state");
 const budgetOverridesPath = path.join(stateDir, "budget-overrides.json");
+const repositoriesPath = path.join(stateDir, "repositories.json");
 type ServiceHealth = {
   name: string;
   url: string;
@@ -67,6 +69,18 @@ type BudgetOverrides = {
   globalBudgetUsd?: number;
   agentCaps?: Record<string, number>;
   updatedAt?: string;
+};
+type RegisteredRepository = {
+  id: string;
+  name: string;
+  url: string;
+  branch: string;
+  path: string;
+  status: "ready" | "syncing" | "error";
+  createdAt: string;
+  updatedAt: string;
+  lastSyncAt?: string;
+  error?: string;
 };
 
 function addEvent(event: string, summary: string): void {
@@ -99,6 +113,54 @@ function saveBudgetOverrides(overrides: BudgetOverrides): void {
 }
 
 loadBudgetOverrides();
+
+function sanitizeRepositoryId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || `repo-${nanoid(6)}`;
+}
+
+function defaultRepository(): RegisteredRepository {
+  return {
+    id: "default",
+    name: "Zero Human Monorepo",
+    url: hostRepoPath,
+    branch: "main",
+    path: sourceRepoPath,
+    status: "ready",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString()
+  };
+}
+
+function loadRepositories(): Map<string, RegisteredRepository> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(repositoriesPath, "utf8")) as RegisteredRepository[];
+    return new Map(raw.filter((repo) => repo.id !== "default").map((repo) => [repo.id, repo]));
+  } catch {
+    return new Map();
+  }
+}
+
+const repositories = loadRepositories();
+
+function saveRepositories(): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(repositoriesPath, JSON.stringify(Array.from(repositories.values()), null, 2));
+}
+
+function listRepositories(): RegisteredRepository[] {
+  return [defaultRepository(), ...Array.from(repositories.values()).sort((a, b) => a.name.localeCompare(b.name))];
+}
+
+function getRepository(repositoryId?: string): RegisteredRepository {
+  if (!repositoryId || repositoryId === "default") return defaultRepository();
+  const repository = repositories.get(repositoryId);
+  if (!repository) throw new Error(`Repository ${repositoryId} is not registered`);
+  return repository;
+}
+
+function isCloneableRepositoryUrl(value: string): boolean {
+  return /^(https?:\/\/|git@|ssh:\/\/|file:\/\/)/i.test(value.trim());
+}
 
 async function sendNotification(event: string, message: string, payload: Record<string, unknown>): Promise<{ delivered: boolean; error?: string }> {
   const webhookUrl = config.notifications.webhook_url?.trim();
@@ -165,38 +227,75 @@ async function runGit(args: string[], cwd = sourceRepoPath): Promise<string> {
   return [stdout, stderr].filter(Boolean).join("\n").trim();
 }
 
-async function ensureSourceRepo(): Promise<void> {
-  if (fs.existsSync(path.join(sourceRepoPath, ".git"))) {
-    await runGit(["fetch", "origin"], sourceRepoPath).catch(() => "");
-    await runGit(["reset", "--hard", "origin/main"], sourceRepoPath).catch(() => "");
-    await runGit(["config", "user.email", "zero-human@example.local"], sourceRepoPath);
-    await runGit(["config", "user.name", "Zero-Human"], sourceRepoPath);
+async function ensureSourceRepo(repository = defaultRepository()): Promise<void> {
+  if (fs.existsSync(path.join(repository.path, ".git"))) {
+    await runGit(["fetch", "origin"], repository.path).catch(() => "");
+    await runGit(["reset", "--hard", `origin/${repository.branch}`], repository.path).catch(() => "");
+    await runGit(["config", "user.email", "zero-human@example.local"], repository.path);
+    await runGit(["config", "user.name", "Zero-Human"], repository.path);
     return;
   }
 
-  if (!fs.existsSync(path.join(hostRepoPath, ".git"))) {
-    throw new Error(`Source repo at ${hostRepoPath} does not contain .git`);
+  if (repository.id !== "default") {
+    throw new Error(`Repository ${repository.name} has not been cloned yet`);
   }
 
-  fs.mkdirSync(path.dirname(sourceRepoPath), { recursive: true });
-  await execFileAsync("git", ["clone", hostRepoPath, sourceRepoPath], {
+  if (!fs.existsSync(path.join(repository.url, ".git"))) {
+    throw new Error(`Source repo at ${repository.url} does not contain .git`);
+  }
+
+  fs.mkdirSync(path.dirname(repository.path), { recursive: true });
+  await execFileAsync("git", ["clone", repository.url, repository.path], {
     windowsHide: true,
     maxBuffer: 1024 * 1024
   });
-  await runGit(["config", "user.email", "zero-human@example.local"], sourceRepoPath);
-  await runGit(["config", "user.name", "Zero-Human"], sourceRepoPath);
+  await runGit(["config", "user.email", "zero-human@example.local"], repository.path);
+  await runGit(["config", "user.name", "Zero-Human"], repository.path);
 }
 
-async function createTaskWorktree(agentId: string, taskId: string): Promise<{ worktreePath: string; branchName: string }> {
-  await ensureSourceRepo();
+async function syncRegisteredRepository(repository: RegisteredRepository): Promise<RegisteredRepository> {
+  repository.status = "syncing";
+  repository.updatedAt = new Date().toISOString();
+  repository.error = undefined;
+  saveRepositories();
+  try {
+    fs.mkdirSync(path.dirname(repository.path), { recursive: true });
+    if (fs.existsSync(path.join(repository.path, ".git"))) {
+      await runGit(["fetch", "origin"], repository.path);
+      await runGit(["checkout", repository.branch], repository.path).catch(() => runGit(["checkout", "-B", repository.branch, `origin/${repository.branch}`], repository.path));
+      await runGit(["pull", "--ff-only", "origin", repository.branch], repository.path);
+    } else {
+      await execFileAsync("git", ["clone", "--branch", repository.branch, repository.url, repository.path], {
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024
+      });
+    }
+    await runGit(["config", "user.email", "zero-human@example.local"], repository.path);
+    await runGit(["config", "user.name", "Zero-Human"], repository.path);
+    repository.status = "ready";
+    repository.lastSyncAt = new Date().toISOString();
+  } catch (error) {
+    repository.status = "error";
+    repository.error = (error as Error).message;
+  }
+  repository.updatedAt = new Date().toISOString();
+  repositories.set(repository.id, repository);
+  saveRepositories();
+  return repository;
+}
+
+async function createTaskWorktree(agentId: string, taskId: string, repositoryId?: string): Promise<{ worktreePath: string; branchName: string; repository: RegisteredRepository }> {
+  const repository = getRepository(repositoryId);
+  if (repository.status !== "ready") throw new Error(`Repository ${repository.name} is ${repository.status}`);
+  await ensureSourceRepo(repository);
 
   const worktreePath = resolveWorktreePath(agentId, taskId);
   const branchName = sanitizeRef(`zh/${agentId}/${taskId}`);
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
-  await runGit(["config", "--global", "--add", "safe.directory", sourceRepoPath]);
-  await runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
-  return { worktreePath, branchName };
+  await runGit(["config", "--global", "--add", "safe.directory", repository.path]);
+  await runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], repository.path);
+  return { worktreePath, branchName, repository };
 }
 
 function requireTaskWorktree(task: Task): string {
@@ -213,13 +312,14 @@ async function taskDiff(task: Task): Promise<{ status: string; diff: string }> {
 }
 
 async function cleanupWorktree(task: Task): Promise<void> {
+  const repository = getRepository(task.repositoryId);
   if (task.worktreePath) {
-    await runGit(["worktree", "remove", "--force", task.worktreePath]).catch(() => "");
+    await runGit(["worktree", "remove", "--force", task.worktreePath], repository.path).catch(() => "");
   }
   if (task.branchName) {
-    await runGit(["branch", "-D", task.branchName]).catch(() => "");
+    await runGit(["branch", "-D", task.branchName], repository.path).catch(() => "");
   }
-  await runGit(["worktree", "prune"]).catch(() => "");
+  await runGit(["worktree", "prune"], repository.path).catch(() => "");
 }
 
 function writeApprovalPatch(task: Task, commit: string, patchContent: string): string {
@@ -231,6 +331,13 @@ function writeApprovalPatch(task: Task, commit: string, patchContent: string): s
 }
 
 async function applyApprovedCommitToHost(task: Task, commit: string, patchContent: string): Promise<{ status: "applied" | "patch_written" | "skipped"; output: string; hostCommit?: string; patchPath?: string }> {
+  const repository = getRepository(task.repositoryId);
+  if (repository.id !== "default") {
+    return {
+      status: "skipped",
+      output: `Merged into registered repository clone at ${repository.path}. Push from that clone when ready.`
+    };
+  }
   if (path.resolve(hostRepoPath) === path.resolve(sourceRepoPath)) {
     return { status: "skipped", output: "Source repo is the host repo; no export step needed." };
   }
@@ -268,6 +375,7 @@ async function applyApprovedCommitToHost(task: Task, commit: string, patchConten
 }
 
 async function approveWorktree(task: Task): Promise<{ commit: string; mergeOutput: string; hostOutput: string; hostCommit?: string; hostStatus: string; patchPath?: string }> {
+  const repository = getRepository(task.repositoryId);
   const worktreePath = requireTaskWorktree(task);
   await runGit(["add", "-A"], worktreePath);
   const status = await runGit(["status", "--short"], worktreePath);
@@ -277,9 +385,9 @@ async function approveWorktree(task: Task): Promise<{ commit: string; mergeOutpu
   const commit = await runGit(["rev-parse", "HEAD"], worktreePath);
   const shortCommit = await runGit(["rev-parse", "--short", "HEAD"], worktreePath);
   const patchContent = await runGit(["format-patch", "-1", "--stdout", commit], worktreePath);
-  await runGit(["checkout", "main"], sourceRepoPath).catch(() => "");
+  await runGit(["checkout", repository.branch], repository.path).catch(() => "");
   const mergeOutput = task.branchName
-    ? await runGit(["merge", "--no-ff", task.branchName, "-m", `merge: ${task.id}`], sourceRepoPath)
+    ? await runGit(["merge", "--no-ff", task.branchName, "-m", `merge: ${task.id}`], repository.path)
     : "No branchName recorded; commit remains in task worktree.";
   const hostApply = await applyApprovedCommitToHost(task, commit, patchContent);
   return {
@@ -550,6 +658,7 @@ app.get("/api/state", async (_req, res) => {
     skillProgress: Array.from(skillProgress.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     alerts,
     upstreams: upstreamStatus(),
+    repositories: listRepositories(),
     budget: {
       global: companyState.budget_usd,
       allocated: totalAgentBudget,
@@ -558,6 +667,57 @@ app.get("/api/state", async (_req, res) => {
     },
     combos: config.gateway.combos
   });
+});
+
+app.post("/api/repositories", async (req, res) => {
+  const { name, url, branch } = (req.body ?? {}) as { name?: string; url?: string; branch?: string };
+  const repoUrl = url?.trim() ?? "";
+  const repoName = name?.trim() || repoUrl.split(/[\/:]/).pop()?.replace(/\.git$/, "") || "Repository";
+  const repoBranch = branch?.trim() || "main";
+  if (!isCloneableRepositoryUrl(repoUrl)) {
+    return res.status(400).json({ error: "Repository URL must be a Git URL, for example https://github.com/org/repo.git" });
+  }
+
+  const baseId = sanitizeRepositoryId(repoName);
+  let id = baseId;
+  let counter = 2;
+  while (repositories.has(id) || id === "default") {
+    id = `${baseId}-${counter++}`;
+  }
+
+  const now = new Date().toISOString();
+  const repository: RegisteredRepository = {
+    id,
+    name: repoName,
+    url: repoUrl,
+    branch: repoBranch,
+    path: path.join(repositoryBasePath, id),
+    status: "syncing",
+    createdAt: now,
+    updatedAt: now
+  };
+  repositories.set(repository.id, repository);
+  saveRepositories();
+  const synced = await syncRegisteredRepository(repository);
+  if (synced.status === "error") return res.status(502).json(synced);
+  addEvent("zh:repository:registered", `Registered ${synced.name}`);
+  res.status(201).json(synced);
+});
+
+app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
+  try {
+    const repository = getRepository(req.params.repositoryId);
+    if (repository.id === "default") {
+      await ensureSourceRepo(repository);
+      return res.json(repository);
+    }
+    const synced = await syncRegisteredRepository(repository);
+    if (synced.status === "error") return res.status(502).json(synced);
+    addEvent("zh:repository:synced", `Synced ${synced.name}`);
+    res.json(synced);
+  } catch (error) {
+    res.status(404).json({ error: (error as Error).message });
+  }
 });
 
 app.post("/api/agents/:agentId/hire", async (req, res) => {
@@ -622,12 +782,13 @@ app.post("/api/budget", (req, res) => {
 });
 
 app.post("/api/tasks", async (req, res) => {
-  const { agentId, type, description, priority, context } = req.body as {
+  const { agentId, type, description, priority, context, repositoryId } = req.body as {
     agentId?: string;
     type?: TaskType;
     description?: string;
     priority?: 1 | 2 | 3;
     context?: string[];
+    repositoryId?: string;
   };
   if (!agentId || !agents.has(agentId)) return res.status(400).json({ error: "Valid agentId is required" });
   if (!description?.trim()) return res.status(400).json({ error: "description is required" });
@@ -637,9 +798,9 @@ app.post("/api/tasks", async (req, res) => {
 
   const now = new Date().toISOString();
   const id = `task_${nanoid(8)}`;
-  let worktree: { worktreePath: string; branchName: string };
+  let worktree: { worktreePath: string; branchName: string; repository: RegisteredRepository };
   try {
-    worktree = await createTaskWorktree(agentId, id);
+    worktree = await createTaskWorktree(agentId, id, repositoryId);
   } catch (error) {
     addEvent(ZHEvent.AGENT_ERROR, `Failed to create worktree for ${agentId}: ${(error as Error).message}`);
     return res.status(500).json({ error: `Failed to create worktree: ${(error as Error).message}` });
@@ -653,6 +814,9 @@ app.post("/api/tasks", async (req, res) => {
     context: context ?? [],
     priority: priority ?? 2,
     status: "assigned",
+    repositoryId: worktree.repository.id,
+    repositoryName: worktree.repository.name,
+    repositoryPath: worktree.repository.path,
     worktreePath: worktree.worktreePath,
     branchName: worktree.branchName,
     validationCommand: "git status --short",
