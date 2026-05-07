@@ -31,7 +31,16 @@ const roleSkillCatalog: Record<Agent["role"], string[]> = {
   frontend: ["ui_implementation", "react", "accessibility", "state_management"],
   backend: ["api_design", "database", "integration", "testing"],
   qa: ["test_planning", "regression_testing", "e2e_validation", "risk_analysis"],
-  devops: ["docker", "ci_cd", "deployment", "health_checks"]
+  devops: ["docker", "ci_cd", "deployment", "health_checks"],
+  product: ["product_strategy", "prd_writing", "roadmap_planning"],
+  design: ["design_system", "ux_research", "visual_design"],
+  marketing: ["content_strategy", "campaign_planning", "seo"],
+  sales: ["sales_enablement", "proposal_writing", "customer_discovery"],
+  support: ["support_triage", "customer_docs", "feedback_analysis"],
+  finance: ["budget_tracking", "vendor_analysis", "unit_economics"],
+  operations: ["process_design", "vendor_analysis", "budget_tracking"],
+  research: ["feedback_analysis", "market_research", "competitive_analysis"],
+  legal: ["legal_review", "privacy_review", "license_review"]
 };
 
 const taskSkillCatalog: Record<Task["type"], string[]> = {
@@ -44,7 +53,11 @@ const taskSkillCatalog: Record<Task["type"], string[]> = {
 
 function keywordSkills(description: string): string[] {
   const lowered = description.toLowerCase();
+  const registryMatches = Object.entries(config.skill_registry ?? {})
+    .filter(([, definition]) => definition.triggers.some((trigger) => lowered.includes(trigger.toLowerCase())))
+    .map(([skill]) => skill);
   return [
+    ...registryMatches,
     lowered.match(/\b(ui|frontend|react|css|layout|browser)\b/) ? "frontend_implementation" : "",
     lowered.match(/\b(api|backend|database|server|auth|endpoint)\b/) ? "backend_integration" : "",
     lowered.match(/\b(docker|container|compose|deploy|ci|github action)\b/) ? "devops_delivery" : "",
@@ -54,7 +67,11 @@ function keywordSkills(description: string): string[] {
 }
 
 function requiredSkillsForTask(task: Task, agent: Agent): string[] {
+  const registryRoleSkills = Object.entries(config.skill_registry ?? {})
+    .filter(([, definition]) => definition.roles.includes(agent.role))
+    .map(([skill]) => skill);
   return Array.from(new Set([
+    ...registryRoleSkills,
     ...roleSkillCatalog[agent.role],
     ...agent.skills,
     ...taskSkillCatalog[task.type],

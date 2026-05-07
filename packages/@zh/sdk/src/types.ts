@@ -1,4 +1,18 @@
-export type AgentRole = "cto" | "frontend" | "backend" | "qa" | "devops";
+export type AgentRole =
+  | "cto"
+  | "frontend"
+  | "backend"
+  | "qa"
+  | "devops"
+  | "product"
+  | "design"
+  | "marketing"
+  | "sales"
+  | "support"
+  | "finance"
+  | "operations"
+  | "research"
+  | "legal";
 export type BrainKind = "hermes" | "simple";
 export type MemoryKind = "persistent" | "session";
 export type ExecutorKind = "claude-code" | "codex" | "cursor" | "bash";
@@ -85,6 +99,14 @@ export interface CompanyConfig {
   currency: string;
 }
 
+export interface SkillDefinition {
+  category: string;
+  description: string;
+  roles: AgentRole[];
+  triggers: string[];
+  tools?: string[];
+}
+
 export interface ZeroHumanConfig {
   version: string;
   company: CompanyConfig;
@@ -117,6 +139,7 @@ export interface ZeroHumanConfig {
     skills?: string[];
     schedule?: string | null;
   }>;
+  skill_registry?: Record<string, SkillDefinition>;
   orchestrator: {
     port: number;
     host: string;

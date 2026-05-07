@@ -3,7 +3,7 @@ version: "1.0"
 company:
   name: "Zero-Human Studio"
   description: "Autonomous dev agency"
-  budget_usd: 100
+  budget_usd: 160
   currency: "USD"
 
 infrastructure:
@@ -83,6 +83,218 @@ agents:
       - "dependency_updates"
       - "health_checks"
     schedule: "0 2 * * *"
+  product_manager:
+    role: "product"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "cheap_stack"
+    executor: "codex"
+    max_budget_usd: 12
+    skills:
+      - "product_strategy"
+      - "prd_writing"
+      - "roadmap_planning"
+    schedule: null
+  brand_designer:
+    role: "design"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "cheap_stack"
+    executor: "codex"
+    max_budget_usd: 12
+    skills:
+      - "design_system"
+      - "ux_research"
+      - "visual_design"
+    schedule: null
+  growth_marketer:
+    role: "marketing"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "free_stack"
+    executor: "codex"
+    max_budget_usd: 8
+    skills:
+      - "content_strategy"
+      - "campaign_planning"
+      - "seo"
+    schedule: null
+  customer_success:
+    role: "support"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "free_stack"
+    executor: "bash"
+    max_budget_usd: 5
+    skills:
+      - "support_triage"
+      - "customer_docs"
+      - "feedback_analysis"
+    schedule: null
+  finance_ops:
+    role: "finance"
+    brain: "hermes"
+    memory: "persistent"
+    model_combo: "free_stack"
+    executor: "bash"
+    max_budget_usd: 5
+    skills:
+      - "budget_tracking"
+      - "vendor_analysis"
+      - "unit_economics"
+    schedule: null
+
+skill_registry:
+  architecture:
+    category: "engineering"
+    description: "Design technical architecture, service boundaries, and long-term system direction."
+    roles: ["cto", "backend", "devops"]
+    triggers: ["architecture", "system", "design", "scalability", "prd"]
+    tools: ["codex", "9router", "hermes"]
+  code_review:
+    category: "engineering"
+    description: "Review code for regressions, maintainability, security risk, and missing tests."
+    roles: ["cto", "backend", "frontend", "qa"]
+    triggers: ["review", "bug", "risk", "regression", "pull request"]
+    tools: ["codex", "git"]
+  api_design:
+    category: "engineering"
+    description: "Design and implement backend APIs, contracts, and service integrations."
+    roles: ["backend", "cto"]
+    triggers: ["api", "endpoint", "server", "integration", "auth"]
+    tools: ["codex", "git"]
+  database:
+    category: "engineering"
+    description: "Model data, migrations, persistence rules, and storage reliability."
+    roles: ["backend", "devops"]
+    triggers: ["database", "migration", "schema", "postgres", "redis"]
+    tools: ["codex", "docker"]
+  testing:
+    category: "quality"
+    description: "Create validation strategy, automated tests, and regression checks."
+    roles: ["qa", "backend", "frontend", "cto"]
+    triggers: ["test", "qa", "e2e", "validation", "coverage"]
+    tools: ["codex", "playwright"]
+  docker:
+    category: "operations"
+    description: "Build, run, debug, and ship containerized services."
+    roles: ["devops", "backend"]
+    triggers: ["docker", "compose", "container", "image", "port"]
+    tools: ["docker", "codex"]
+  ci_cd:
+    category: "operations"
+    description: "Maintain GitHub Actions, staging pipelines, release checks, and deployment gates."
+    roles: ["devops", "qa", "cto"]
+    triggers: ["github action", "ci", "deploy", "workflow", "staging"]
+    tools: ["github-actions", "codex"]
+  product_strategy:
+    category: "product"
+    description: "Translate company goals into product direction, scope, and user outcomes."
+    roles: ["product", "cto", "marketing"]
+    triggers: ["product", "strategy", "goal", "market", "roadmap"]
+    tools: ["hermes", "9router"]
+  prd_writing:
+    category: "product"
+    description: "Write clear product requirements, acceptance criteria, and release scope."
+    roles: ["product", "cto", "design"]
+    triggers: ["prd", "requirement", "spec", "acceptance", "feature"]
+    tools: ["codex", "hermes"]
+  roadmap_planning:
+    category: "product"
+    description: "Prioritize work into milestones, dependencies, owners, and execution phases."
+    roles: ["product", "cto", "operations"]
+    triggers: ["roadmap", "milestone", "timeline", "priority", "plan"]
+    tools: ["hermes"]
+  design_system:
+    category: "design"
+    description: "Create reusable UI patterns, visual language, tokens, and interaction standards."
+    roles: ["design", "frontend", "product"]
+    triggers: ["design system", "component", "token", "ui", "style"]
+    tools: ["codex"]
+  ux_research:
+    category: "design"
+    description: "Analyze users, workflows, friction, and usability risks."
+    roles: ["design", "product", "support"]
+    triggers: ["ux", "user", "workflow", "friction", "research"]
+    tools: ["hermes", "9router"]
+  visual_design:
+    category: "design"
+    description: "Shape layout, brand feel, page hierarchy, and polished screen composition."
+    roles: ["design", "frontend", "marketing"]
+    triggers: ["visual", "brand", "layout", "landing", "screen"]
+    tools: ["codex"]
+  content_strategy:
+    category: "marketing"
+    description: "Plan messaging, content pillars, offers, and editorial direction."
+    roles: ["marketing", "product", "sales"]
+    triggers: ["content", "copy", "message", "audience", "offer"]
+    tools: ["hermes", "9router"]
+  campaign_planning:
+    category: "marketing"
+    description: "Design launch campaigns, channels, assets, and measurement plans."
+    roles: ["marketing", "sales", "product"]
+    triggers: ["campaign", "launch", "channel", "ad", "promotion"]
+    tools: ["hermes"]
+  seo:
+    category: "marketing"
+    description: "Plan search intent, keywords, page structure, and organic growth tasks."
+    roles: ["marketing", "frontend"]
+    triggers: ["seo", "keyword", "organic", "search", "metadata"]
+    tools: ["codex", "9router"]
+  sales_enablement:
+    category: "sales"
+    description: "Create sales narratives, objection handling, demo flows, and customer handoff."
+    roles: ["sales", "marketing", "product"]
+    triggers: ["sales", "lead", "demo", "objection", "proposal"]
+    tools: ["hermes"]
+  support_triage:
+    category: "support"
+    description: "Classify user problems, reproduce issues, and route tickets to the right owner."
+    roles: ["support", "qa", "product"]
+    triggers: ["support", "ticket", "issue", "complaint", "help"]
+    tools: ["hermes", "codex"]
+  customer_docs:
+    category: "support"
+    description: "Create help articles, onboarding notes, setup guides, and troubleshooting docs."
+    roles: ["support", "product", "marketing"]
+    triggers: ["docs", "guide", "onboarding", "setup", "faq"]
+    tools: ["codex"]
+  feedback_analysis:
+    category: "research"
+    description: "Summarize user feedback, cluster pain points, and identify product opportunities."
+    roles: ["research", "support", "product", "marketing"]
+    triggers: ["feedback", "survey", "insight", "customer", "analysis"]
+    tools: ["hermes", "9router"]
+  budget_tracking:
+    category: "finance"
+    description: "Monitor spend, caps, allocation, and approval thresholds."
+    roles: ["finance", "operations", "cto"]
+    triggers: ["budget", "cost", "spend", "cap", "approval"]
+    tools: ["hermes"]
+  vendor_analysis:
+    category: "finance"
+    description: "Evaluate vendors, pricing, subscriptions, and operational tradeoffs."
+    roles: ["finance", "operations", "cto"]
+    triggers: ["vendor", "pricing", "subscription", "contract", "cost"]
+    tools: ["9router", "hermes"]
+  unit_economics:
+    category: "finance"
+    description: "Track unit cost, margins, ROI assumptions, and scaling economics."
+    roles: ["finance", "marketing", "product"]
+    triggers: ["roi", "margin", "economics", "cac", "ltv"]
+    tools: ["hermes"]
+  process_design:
+    category: "operations"
+    description: "Design repeatable backoffice workflows, SOPs, approvals, and handoffs."
+    roles: ["operations", "support", "finance", "product"]
+    triggers: ["process", "sop", "workflow", "handoff", "approval"]
+    tools: ["hermes"]
+  legal_review:
+    category: "legal"
+    description: "Flag policy, licensing, privacy, and terms risks for human legal review."
+    roles: ["legal", "operations", "product"]
+    triggers: ["legal", "license", "privacy", "terms", "compliance"]
+    tools: ["hermes"]
 
 orchestrator:
   port: 3003

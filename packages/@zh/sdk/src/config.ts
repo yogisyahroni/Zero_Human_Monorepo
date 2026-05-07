@@ -36,7 +36,7 @@ const configSchema = z.object({
     })))
   }),
   agents: z.record(z.object({
-    role: z.enum(["cto", "frontend", "backend", "qa", "devops"]),
+    role: z.enum(["cto", "frontend", "backend", "qa", "devops", "product", "design", "marketing", "sales", "support", "finance", "operations", "research", "legal"]),
     brain: z.enum(["hermes", "simple"]),
     memory: z.enum(["persistent", "session"]),
     model_combo: z.string(),
@@ -45,6 +45,13 @@ const configSchema = z.object({
     skills: z.array(z.string()).optional(),
     schedule: z.string().nullable().optional()
   })),
+  skill_registry: z.record(z.object({
+    category: z.string(),
+    description: z.string(),
+    roles: z.array(z.enum(["cto", "frontend", "backend", "qa", "devops", "product", "design", "marketing", "sales", "support", "finance", "operations", "research", "legal"])),
+    triggers: z.array(z.string()),
+    tools: z.array(z.string()).optional()
+  })).optional(),
   orchestrator: z.object({
     port: z.number(),
     host: z.string(),

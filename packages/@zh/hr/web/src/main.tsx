@@ -132,6 +132,13 @@ type State = {
     version: string | null;
   }>;
   repositories: RegisteredRepository[];
+  skillRegistry: Record<string, {
+    category: string;
+    description: string;
+    roles: string[];
+    triggers: string[];
+    tools?: string[];
+  }>;
   budget: { global: number; allocated: number; spent: number; currency: string };
   combos: Record<string, Array<{ provider: string; model: string }>>;
 };
@@ -150,6 +157,7 @@ const fallbackState: State = {
   brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
   upstreams: [],
   repositories: [],
+  skillRegistry: {},
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
 };
@@ -249,6 +257,8 @@ function App() {
     agent,
     learned: state.skillProgress.filter((skill) => skill.agentId === agent.id)
   }));
+  const registryEntries = Object.entries(state.skillRegistry);
+  const registryCategories = Array.from(new Set(registryEntries.map(([, skill]) => skill.category))).sort();
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -717,6 +727,46 @@ function App() {
                       ? `${learned.length} learned skills tracked by Hermes Brain`
                       : "Waiting for first handled task"}
                   </small>
+                </article>
+              ))}
+            </div>
+            <div className="registryBoard">
+              <div className="registrySummary">
+                <strong>{registryEntries.length}</strong>
+                <span>company skills across {registryCategories.length} divisions</span>
+              </div>
+              <div className="registryCategories">
+                {registryCategories.map((category) => (
+                  <article className="registryCategory" key={category}>
+                    <strong>{category}</strong>
+                    <span>{registryEntries.filter(([, skill]) => skill.category === category).length} skills</span>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </div>
+          )}
+
+          {activeView === "memory" && (
+          <div className="panel registry">
+            <div className="panelHead">
+              <div>
+                <h2>Company skill registry</h2>
+                <p>Shared skill catalog for tech and backoffice divisions.</p>
+              </div>
+              <Brain size={20} />
+            </div>
+            <div className="registryList">
+              {registryEntries.map(([name, skill]) => (
+                <article className="registrySkill" key={name}>
+                  <div>
+                    <strong>{name.replaceAll("_", " ")}</strong>
+                    <span>{skill.category} · {skill.roles.join(", ")}</span>
+                  </div>
+                  <p>{skill.description}</p>
+                  <div className="triggerRow">
+                    {skill.triggers.slice(0, 5).map((trigger) => <code key={trigger}>{trigger}</code>)}
+                  </div>
                 </article>
               ))}
             </div>
