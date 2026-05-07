@@ -20,6 +20,7 @@
     "upstream:status": "powershell -ExecutionPolicy Bypass -File scripts/upstream-status.ps1",
     "upstream:sync:router": "powershell -ExecutionPolicy Bypass -File scripts/sync-upstream.ps1 router",
     "router:update": "powershell -ExecutionPolicy Bypass -File scripts/sync-upstream.ps1 router; docker compose -p zero-human up -d --build 9router zh-router-adapter zh-brain-adapter zero-human",
+    "router:update:stable": "powershell -ExecutionPolicy Bypass -File scripts/update-router-stable.ps1",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"

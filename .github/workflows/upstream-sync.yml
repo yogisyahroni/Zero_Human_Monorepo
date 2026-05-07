@@ -18,7 +18,6 @@ jobs:
       fail-fast: false
       matrix:
         upstream:
-          - { name: router, repo: decolua/9router, branch: master }
           - { name: brain, repo: NousResearch/hermes-agent, branch: main }
           - { name: hr, repo: paperclipai/paperclip, branch: master }
 
