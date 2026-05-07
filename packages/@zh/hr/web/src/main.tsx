@@ -141,6 +141,10 @@ function App() {
   const [priority, setPriority] = useState<1 | 2 | 3>(2);
   const [busy, setBusy] = useState(false);
   const [diffs, setDiffs] = useState<Record<string, { status: string; diff: string }>>({});
+  const [budgetDraft, setBudgetDraft] = useState<{ globalBudgetUsd: string; agentCaps: Record<string, string> }>({
+    globalBudgetUsd: "",
+    agentCaps: {}
+  });
 
   async function refresh() {
     const response = await fetch("/api/state");
@@ -152,6 +156,14 @@ function App() {
     const interval = window.setInterval(refresh, 1800);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!state.agents.length || budgetDraft.globalBudgetUsd) return;
+    setBudgetDraft({
+      globalBudgetUsd: String(state.budget.global),
+      agentCaps: Object.fromEntries(state.agents.map((agent) => [agent.id, String(agent.maxBudgetUsd)]))
+    });
+  }, [budgetDraft.globalBudgetUsd, state.agents, state.budget.global]);
 
   const activeTasks = useMemo(
     () => state.tasks.filter((task) => task.status !== "done").length,
@@ -210,6 +222,21 @@ function App() {
   async function reject(taskId: string) {
     setBusy(true);
     await fetch(`/api/tasks/${taskId}/reject`, { method: "POST" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function saveBudget(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    await fetch("/api/budget", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        globalBudgetUsd: Number(budgetDraft.globalBudgetUsd),
+        agentCaps: Object.fromEntries(Object.entries(budgetDraft.agentCaps).map(([agentId, cap]) => [agentId, Number(cap)]))
+      })
+    });
     await refresh();
     setBusy(false);
   }
@@ -371,6 +398,36 @@ function App() {
               <span>Auto merge <strong>{state.policies.auto_merge ? "on" : "off"}</strong></span>
               <span>Paused agents <strong>{pausedAgents}</strong></span>
             </div>
+            <form className="budgetEditor" onSubmit={saveBudget}>
+              <label>
+                Global cap
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={budgetDraft.globalBudgetUsd}
+                  onChange={(event) => setBudgetDraft((current) => ({ ...current, globalBudgetUsd: event.target.value }))}
+                />
+              </label>
+              {state.agents.map((agent) => (
+                <label key={agent.id}>
+                  {agent.id.replaceAll("_", " ")}
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={budgetDraft.agentCaps[agent.id] ?? ""}
+                    onChange={(event) => setBudgetDraft((current) => ({
+                      ...current,
+                      agentCaps: { ...current.agentCaps, [agent.id]: event.target.value }
+                    }))}
+                  />
+                </label>
+              ))}
+              <button disabled={busy || !budgetDraft.globalBudgetUsd}>
+                <Check size={15} /> Save caps
+              </button>
+            </form>
           </div>
 
           <div className="panel skills">

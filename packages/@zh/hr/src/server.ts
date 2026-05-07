@@ -19,6 +19,7 @@ import { upstreamSources } from "@zh/sdk";
 
 const config = loadConfig();
 const app = express();
+const companyState = { ...config.company };
 const agents = new Map<string, Agent>(agentsFromConfig(config).map((agent) => [agent.id, agent]));
 const tasks = new Map<string, Task>();
 const events: Array<{ event: string; timestamp: string; summary: string }> = [];
@@ -41,6 +42,8 @@ const repoRoot = path.resolve(__dirname, "../../../..");
 const execFileAsync = promisify(execFile);
 const hostRepoPath = process.env.ZH_REPO_PATH ?? repoRoot;
 const sourceRepoPath = process.env.ZH_WORKTREE_SOURCE_PATH ?? hostRepoPath;
+const stateDir = process.env.ZH_STATE_PATH ?? path.join(hostRepoPath, ".zero-human", "state");
+const budgetOverridesPath = path.join(stateDir, "budget-overrides.json");
 type ServiceHealth = {
   name: string;
   url: string;
@@ -60,11 +63,42 @@ type BrainMemorySummary = {
   error?: string;
 };
 type BrainSkillSummary = BrainMemorySummary["skills"][number];
+type BudgetOverrides = {
+  globalBudgetUsd?: number;
+  agentCaps?: Record<string, number>;
+  updatedAt?: string;
+};
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
   events.splice(80);
 }
+
+function applyBudgetOverrides(overrides: BudgetOverrides | null): void {
+  if (!overrides) return;
+  if (typeof overrides.globalBudgetUsd === "number" && Number.isFinite(overrides.globalBudgetUsd) && overrides.globalBudgetUsd > 0) {
+    companyState.budget_usd = overrides.globalBudgetUsd;
+  }
+  for (const [agentId, cap] of Object.entries(overrides.agentCaps ?? {})) {
+    const agent = agents.get(agentId);
+    if (agent && Number.isFinite(cap) && cap > 0) agent.maxBudgetUsd = cap;
+  }
+}
+
+function loadBudgetOverrides(): void {
+  try {
+    applyBudgetOverrides(JSON.parse(fs.readFileSync(budgetOverridesPath, "utf8")) as BudgetOverrides);
+  } catch {
+    applyBudgetOverrides(null);
+  }
+}
+
+function saveBudgetOverrides(overrides: BudgetOverrides): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(budgetOverridesPath, JSON.stringify({ ...overrides, updatedAt: new Date().toISOString() }, null, 2));
+}
+
+loadBudgetOverrides();
 
 async function sendNotification(event: string, message: string, payload: Record<string, unknown>): Promise<{ delivered: boolean; error?: string }> {
   const webhookUrl = config.notifications.webhook_url?.trim();
@@ -261,7 +295,7 @@ async function approveWorktree(task: Task): Promise<{ commit: string; mergeOutpu
 async function maybeAutoApprove(task: Task): Promise<void> {
   if (config.orchestrator.approval_required || !config.orchestrator.auto_merge) return;
   if (task.status !== "pending_review") return;
-  if (currentSpend() >= config.company.budget_usd) return;
+  if (currentSpend() >= companyState.budget_usd) return;
 
   try {
     const approved = await approveWorktree(task);
@@ -290,11 +324,11 @@ function currentSpend(): number {
 
 async function enforceBudget(reason: string): Promise<void> {
   const globalSpent = currentSpend();
-  if (globalSpent >= config.company.budget_usd && !budgetFlags.globalPaused) {
+  if (globalSpent >= companyState.budget_usd && !budgetFlags.globalPaused) {
     budgetFlags.globalPaused = true;
     for (const agent of agents.values()) agent.status = "paused";
-    const payload = { scope: "global", spent: globalSpent, limit: config.company.budget_usd, reason };
-    await addBudgetAlert(ZHEvent.QUOTA_EXHAUSTED, "global", `Global budget exhausted: $${globalSpent.toFixed(4)} / $${config.company.budget_usd}`, "critical", payload);
+    const payload = { scope: "global", spent: globalSpent, limit: companyState.budget_usd, reason };
+    await addBudgetAlert(ZHEvent.QUOTA_EXHAUSTED, "global", `Global budget exhausted: $${globalSpent.toFixed(4)} / $${companyState.budget_usd}`, "critical", payload);
     if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, payload);
     return;
   }
@@ -500,7 +534,7 @@ app.get("/api/state", async (_req, res) => {
   const spent = currentSpend();
   const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
   res.json({
-    company: config.company,
+    company: companyState,
     infrastructure: {
       redisUrl: config.infrastructure.redis_url,
       worktreeBase: config.infrastructure.worktree_base,
@@ -517,10 +551,10 @@ app.get("/api/state", async (_req, res) => {
     alerts,
     upstreams: upstreamStatus(),
     budget: {
-      global: config.company.budget_usd,
+      global: companyState.budget_usd,
       allocated: totalAgentBudget,
       spent: Number(spent.toFixed(4)),
-      currency: config.company.currency
+      currency: companyState.currency
     },
     combos: config.gateway.combos
   });
@@ -540,12 +574,51 @@ app.post("/api/agents/:agentId/resume", async (req, res) => {
   if (!agent) return res.status(404).json({ error: "Agent not found" });
   const { resetCost } = (req.body ?? {}) as { resetCost?: boolean };
   if (resetCost) agent.costAccumulatedUsd = 0;
-  if (currentSpend() >= config.company.budget_usd) return res.status(423).json({ error: "Global budget is still exhausted" });
+  if (currentSpend() >= companyState.budget_usd) return res.status(423).json({ error: "Global budget is still exhausted" });
   if (agent.costAccumulatedUsd >= agent.maxBudgetUsd) return res.status(423).json({ error: `${agent.id} is still over its budget cap` });
   agent.status = "idle";
   budgetFlags.pausedAgents.delete(agent.id);
   addEvent("zh:agent:resumed", `Resumed ${agent.id}`);
   res.json(agent);
+});
+
+app.post("/api/budget", (req, res) => {
+  const { globalBudgetUsd, agentCaps } = (req.body ?? {}) as {
+    globalBudgetUsd?: number;
+    agentCaps?: Record<string, number>;
+  };
+  const nextGlobalBudget = Number(globalBudgetUsd);
+  if (!Number.isFinite(nextGlobalBudget) || nextGlobalBudget <= 0) {
+    return res.status(400).json({ error: "globalBudgetUsd must be a positive number" });
+  }
+
+  const nextAgentCaps: Record<string, number> = {};
+  for (const agent of agents.values()) {
+    const rawCap = agentCaps?.[agent.id] ?? agent.maxBudgetUsd;
+    const cap = Number(rawCap);
+    if (!Number.isFinite(cap) || cap <= 0) {
+      return res.status(400).json({ error: `${agent.id} budget cap must be a positive number` });
+    }
+    nextAgentCaps[agent.id] = cap;
+  }
+
+  const overrides = { globalBudgetUsd: nextGlobalBudget, agentCaps: nextAgentCaps };
+  applyBudgetOverrides(overrides);
+  saveBudgetOverrides(overrides);
+  if (currentSpend() < companyState.budget_usd) budgetFlags.globalPaused = false;
+  for (const agent of agents.values()) {
+    if (agent.costAccumulatedUsd < agent.maxBudgetUsd) budgetFlags.pausedAgents.delete(agent.id);
+  }
+  addEvent("zh:budget:updated", `Budget caps updated: global $${companyState.budget_usd}`);
+  res.json({
+    company: companyState,
+    agents: Array.from(agents.values()).map((agent) => ({
+      id: agent.id,
+      maxBudgetUsd: agent.maxBudgetUsd,
+      costAccumulatedUsd: agent.costAccumulatedUsd,
+      status: agent.status
+    }))
+  });
 });
 
 app.post("/api/tasks", async (req, res) => {
@@ -560,7 +633,7 @@ app.post("/api/tasks", async (req, res) => {
   if (!description?.trim()) return res.status(400).json({ error: "description is required" });
   const selectedAgent = agents.get(agentId);
   if (selectedAgent?.status === "paused") return res.status(423).json({ error: `${agentId} is paused by budget protection` });
-  if (currentSpend() >= config.company.budget_usd) return res.status(423).json({ error: "Global budget is exhausted" });
+  if (currentSpend() >= companyState.budget_usd) return res.status(423).json({ error: "Global budget is exhausted" });
 
   const now = new Date().toISOString();
   const id = `task_${nanoid(8)}`;
@@ -637,7 +710,7 @@ app.post("/api/tasks/:taskId/approve", async (req, res) => {
   const task = tasks.get(req.params.taskId);
   if (!task) return res.status(404).json({ error: "Task not found" });
   if (task.status === "error") return res.status(409).json({ error: "Cannot approve a failed task" });
-  if (currentSpend() >= config.company.budget_usd) return res.status(423).json({ error: "Global budget is exhausted" });
+  if (currentSpend() >= companyState.budget_usd) return res.status(423).json({ error: "Global budget is exhausted" });
   try {
     const approved = await approveWorktree(task);
     await cleanupWorktree(task);

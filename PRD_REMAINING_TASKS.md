@@ -87,7 +87,7 @@ Tasks:
 - [x] Add budget policy tests for per-agent and global caps.
 - [x] Add dashboard alert row for paused agents and blocked dispatches.
 - [x] Add reset/resume endpoint for manually unpausing an agent.
-- [ ] Add UI for editing budget caps without editing `zero-human.yaml`.
+- [x] Add UI for editing budget caps without editing `zero-human.yaml`.
 
 Acceptance criteria:
 - Crossing threshold emits event, dashboard alert, and webhook when configured.

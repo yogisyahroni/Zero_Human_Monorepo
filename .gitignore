@@ -8,4 +8,5 @@ dist/
 worktrees/
 data/
 .zero-human/approved/
+.zero-human/state/
 packages/@zh/hr/web/dist/
