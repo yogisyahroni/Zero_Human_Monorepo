@@ -16,6 +16,22 @@ services:
       timeout: 3s
       retries: 10
 
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      CONTAINERS: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      POST: "1"
+      VERSION: "1"
+      VOLUMES: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - zh-network
+
   9router:
     build:
       context: ./packages/@zh/router/upstream
@@ -52,13 +68,14 @@ services:
       HERMES_HOME: /opt/data
       OPENAI_BASE_URL: http://9router:20128/v1
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk_9router}
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
     ports:
       - "9119:9119"
     volumes:
       - brain-memory:/opt/data
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - 9router
+      - docker-socket-proxy
     networks:
       - zh-network
     healthcheck:
@@ -103,11 +120,11 @@ services:
       ZH_ROUTER_URL: http://9router:20128
       ZH_BRAIN_URL: http://hermes:9119
       REDIS_URL: redis://redis:6379
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
     ports:
       - "3100:3100"
     volumes:
       - paperclip-data:/paperclip
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       paperclip-db:
         condition: service_healthy
@@ -116,6 +133,8 @@ services:
       9router:
         condition: service_started
       hermes:
+        condition: service_started
+      docker-socket-proxy:
         condition: service_started
     networks:
       - zh-network
@@ -158,15 +177,16 @@ services:
       ZH_ROUTER_URL: http://zh-router-adapter:20129
       ZH_BRAIN_URL: http://hermes:9119
       ZH_WORKTREE_BASE: /app/worktrees
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
     volumes:
       - brain-memory:/root/.hermes
       - hr-worktrees:/app/worktrees
       - worktree-source:/app/worktree-source
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
       - 9router
       - hermes
+      - docker-socket-proxy
     networks:
       - zh-network
     healthcheck:
@@ -190,18 +210,20 @@ services:
       ZH_REPO_PATH: /repo
       ZH_WORKTREE_SOURCE_PATH: /app/worktree-source
       ZH_WORKTREE_BASE: /app/worktrees
+      ZH_STATE_PATH: /repo/.zero-human/state
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
     ports:
       - "3003:3003"
     volumes:
       - hr-worktrees:/app/worktrees
       - worktree-source:/app/worktree-source
       - .:/repo
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
       - zh-brain-adapter
       - zh-router-adapter
       - paperclip
+      - docker-socket-proxy
     networks:
       - zh-network
     healthcheck:

@@ -119,7 +119,7 @@ Acceptance criteria:
 Goal: reduce Docker socket risk before any production-like usage.
 
 Tasks:
-- [ ] Replace raw Docker socket mount with restricted Docker API proxy or DinD.
+- [x] Replace raw Docker socket mount with restricted Docker API proxy or DinD.
 - [x] Move secrets to `.env` and document required keys.
 - [x] Add secret scanning notes for upstream subtree updates.
 - [x] Add service-level healthchecks to `docker-compose.yml`.

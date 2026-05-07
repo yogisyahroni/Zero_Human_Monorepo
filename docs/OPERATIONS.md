@@ -47,10 +47,8 @@ Restore only into a stopped stack and after saving a fresh backup.
 
 ## Docker Socket Risk
 
-The current development stack still mounts `/var/run/docker.sock` for Paperclip and Brain compatibility. Before production-like use, replace raw socket access with one of:
-- a restricted Docker API proxy
-- a dedicated Docker-in-Docker executor environment
-- an executor service with an explicit allowlist of container operations
+The stack exposes Docker through `docker-socket-proxy` instead of mounting `/var/run/docker.sock` into every service. Treat this as privileged access even with endpoint filtering.
 
-Do not expose this stack directly to the internet while raw Docker socket mounts are enabled.
+Only the proxy service should mount the raw socket. Before production-like use, tighten the allowlist to the exact executor operations required, or move executors to Docker-in-Docker or disposable remote builders.
 
+Do not expose the proxy or raw Docker socket on a public network.
