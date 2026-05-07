@@ -18,6 +18,7 @@ Done:
 - Basic skill telemetry via `zh:skill:learned`.
 - GitHub upstream sync workflow exists at `.github/workflows/upstream-sync.yml`.
 - Real executor v1: HR creates isolated git worktrees from an internal Docker clone, Brain writes executor artifacts, captures changed files, and runs validation.
+- Real executor v2: Brain invokes Claude Code/Codex CLI in the task worktree when available, with explicit fallback artifacts when not configured.
 - Approval v1: diff endpoint, approve commit/merge into internal source clone, and reject cleanup endpoints.
 - Persistent Brain memory v1: notes, task outcomes, and skill confidence are stored in the `brain-memory` volume and shown in the dashboard.
 - Budget notification v1: cost threshold/quota events create dashboard alerts, optionally send configured webhooks, and paused agents can be resumed.
@@ -34,7 +35,7 @@ Tasks:
 - [x] Mount only the task worktree as writable for the Brain executor v1.
 - [x] Capture executor output and attach summary to task result.
 - [x] Run configured validation command before marking task `pending_review`.
-- [ ] Replace Brain executor v1 artifact writer with real Claude Code/Codex container execution.
+- [x] Replace Brain executor v1 artifact writer with real Claude Code/Codex container execution.
 
 Acceptance criteria:
 - Dispatching a coding task creates an isolated git worktree in Docker.

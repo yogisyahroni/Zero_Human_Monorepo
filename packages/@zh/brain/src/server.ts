@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { agentsFromConfig, loadConfig, RedisEventBus, Task, upstreamSources, ZHEvent } from "@zh/sdk";
+import { agentsFromConfig, loadConfig, RedisEventBus, type Agent, Task, upstreamSources, ZHEvent } from "@zh/sdk";
 
 const config = loadConfig();
 const app = express();
@@ -20,6 +20,7 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
 const memoryPath = process.env.ZH_BRAIN_MEMORY_PATH ?? "/root/.hermes/zero-human-memory.json";
+const executorTimeoutMs = Number(process.env.ZH_EXECUTOR_TIMEOUT_MS ?? 15 * 60 * 1000);
 
 type SkillMemory = {
   agentId: string;
@@ -217,6 +218,29 @@ async function runCommand(command: string, cwd: string): Promise<string> {
   return [stdout, stderr].filter(Boolean).join("\n").trim();
 }
 
+async function executableAvailable(bin: string): Promise<boolean> {
+  try {
+    await execFileAsync(bin, ["--version"], {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runProcess(bin: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): Promise<string> {
+  const { stdout, stderr } = await execFileAsync(bin, args, {
+    cwd,
+    windowsHide: true,
+    timeout: executorTimeoutMs,
+    maxBuffer: 10 * 1024 * 1024,
+    env: { ...process.env, ...env }
+  });
+  return [stdout, stderr].filter(Boolean).join("\n").trim();
+}
+
 async function changedFiles(worktreePath: string): Promise<string[]> {
   const output = await runCommand("git status --short", worktreePath);
   return output
@@ -226,16 +250,31 @@ async function changedFiles(worktreePath: string): Promise<string[]> {
     .map((line) => line.replace(/^.. /, ""));
 }
 
-async function runLocalExecutor(task: Task, executionNote: string): Promise<{
-  changedFiles: string[];
-  validationCommand: string;
-  validationOutput: string;
-  executorOutput: string;
-}> {
+function executorPrompt(task: Task, agent: Agent, executionNote: string): string {
+  return [
+    "You are executing a Zero-Human task inside an isolated git worktree.",
+    "Edit files only inside the current working directory.",
+    "Keep the change small, reviewable, and aligned with the existing code style.",
+    "Do not commit changes. Do not push. Leave the worktree ready for human review.",
+    "",
+    `Agent: ${task.agentId}`,
+    `Role: ${agent.role}`,
+    `Task type: ${task.type}`,
+    `Priority: P${task.priority}`,
+    `Branch: ${task.branchName ?? "unknown"}`,
+    "",
+    "Task:",
+    task.description,
+    "",
+    "Persistent memory and router note:",
+    executionNote
+  ].join("\n");
+}
+
+async function writeFallbackArtifact(task: Task, executionNote: string, reason: string): Promise<string> {
   const worktreePath = assertWorktreePath(task.worktreePath);
   const outputDir = path.join(worktreePath, ".zero-human", "tasks");
   const outputPath = path.join(outputDir, `${task.id}.md`);
-  const validationCommand = task.validationCommand ?? "git status --short";
   const content = [
     `# ${task.id}`,
     "",
@@ -247,23 +286,83 @@ async function runLocalExecutor(task: Task, executionNote: string): Promise<{
     "## Request",
     task.description,
     "",
+    "## Executor Fallback",
+    reason,
+    "",
     "## Router Execution Note",
     executionNote,
     "",
     "## Next Review Action",
-    "Review this worktree diff from the Zero-Human dashboard, then approve or reject the task."
+    "Install or configure the requested executor, then rerun this task if code changes are required."
   ].join("\n");
-
   await fs.mkdir(outputDir, { recursive: true });
   await fs.writeFile(outputPath, content, "utf8");
+  return `Fallback artifact written to ${path.relative(worktreePath, outputPath)}`;
+}
+
+async function runCodexExecutor(prompt: string, worktreePath: string): Promise<string | null> {
+  if (!(await executableAvailable("codex"))) return null;
+  return runProcess("codex", [
+    "exec",
+    "--full-auto",
+    "--skip-git-repo-check",
+    prompt
+  ], worktreePath, {
+    CODEX_HOME: process.env.CODEX_HOME ?? "/root/.codex"
+  });
+}
+
+async function runClaudeExecutor(prompt: string, worktreePath: string): Promise<string | null> {
+  if (!(await executableAvailable("claude"))) return null;
+  return runProcess("claude", [
+    "-p",
+    prompt,
+    "--dangerously-skip-permissions"
+  ], worktreePath, {
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "/root/.claude"
+  });
+}
+
+async function runBashExecutor(task: Task, executionNote: string, worktreePath: string): Promise<string> {
+  return writeFallbackArtifact(task, executionNote, `Executor bash recorded the task inside ${worktreePath}.`);
+}
+
+async function runTaskExecutor(task: Task, agent: Agent, executionNote: string): Promise<{
+  changedFiles: string[];
+  validationCommand: string;
+  validationOutput: string;
+  executorOutput: string;
+}> {
+  const worktreePath = assertWorktreePath(task.worktreePath);
+  const validationCommand = task.validationCommand ?? "git status --short";
   await execFileAsync("git", ["config", "--global", "--add", "safe.directory", worktreePath], { windowsHide: true });
   await execFileAsync("git", ["config", "--global", "--add", "safe.directory", "/repo"], { windowsHide: true }).catch(() => undefined);
+  const prompt = executorPrompt(task, agent, executionNote);
+  let executorOutput: string | null = null;
+
+  if (agent.executor === "codex") {
+    executorOutput = await runCodexExecutor(prompt, worktreePath);
+  } else if (agent.executor === "claude-code") {
+    executorOutput = await runClaudeExecutor(prompt, worktreePath);
+    if (!executorOutput) executorOutput = await runCodexExecutor(prompt, worktreePath);
+  } else if (agent.executor === "bash") {
+    executorOutput = await runBashExecutor(task, executionNote, worktreePath);
+  }
+
+  if (!executorOutput) {
+    executorOutput = await writeFallbackArtifact(
+      task,
+      executionNote,
+      `Executor ${agent.executor} is not available in this container.`
+    );
+  }
+
   const validationOutput = await runCommand(validationCommand, worktreePath);
   return {
     changedFiles: await changedFiles(worktreePath),
     validationCommand,
     validationOutput,
-    executorOutput: `Wrote ${path.relative(worktreePath, outputPath)}`
+    executorOutput
   };
 }
 
@@ -283,9 +382,9 @@ async function handleTask(task: Task): Promise<void> {
     checkHermes(),
     askRouter(task, agent.role)
   ]);
-  let executorResult: Awaited<ReturnType<typeof runLocalExecutor>>;
+  let executorResult: Awaited<ReturnType<typeof runTaskExecutor>>;
   try {
-    executorResult = await runLocalExecutor(task, executionNote);
+    executorResult = await runTaskExecutor(task, agent, executionNote);
   } catch (error) {
     const failed: Task = {
       ...task,

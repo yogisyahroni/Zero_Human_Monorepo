@@ -12,6 +12,12 @@ Common keys:
 - `DISCORD_WEBHOOK_URL`
 - `BETTER_AUTH_SECRET`
 
+## Executors
+
+The `zh-brain-adapter` image installs the Claude Code and Codex CLIs. Agents with `executor: claude-code` try `claude` first and fall back to `codex` when the Claude CLI is unavailable. Agents with `executor: codex` call `codex` directly. The executor runs inside the task worktree and must not commit or push changes.
+
+Mount or configure the relevant CLI credentials for non-interactive execution before expecting fully autonomous edits. When an executor binary is missing, Brain writes an explicit `.zero-human/tasks/<taskId>.md` fallback artifact so the review flow remains visible.
+
 Before pushing subtree updates, scan diffs for sample OAuth clients, API keys, and tokens:
 
 ```powershell
