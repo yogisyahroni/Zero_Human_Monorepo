@@ -7,11 +7,11 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { agentsFromConfig, loadConfig, RedisEventBus, type Agent, Task, upstreamSources, ZHEvent } from "@zh/sdk";
+import { HermesCompatibleMemoryStore } from "./memory-store.js";
 
 const config = loadConfig();
 const app = express();
 const agents = new Map(agentsFromConfig(config).map((agent) => [agent.id, agent]));
-const memory = new Map<string, string[]>();
 const activeTasks = new Map<string, Task>();
 const bus = new RedisEventBus(config.infrastructure.redis_url, "brain");
 const routerUrl = config.infrastructure.services?.router_url?.replace(/\/$/, "") ?? "";
@@ -21,34 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
 const memoryPath = process.env.ZH_BRAIN_MEMORY_PATH ?? "/root/.hermes/zero-human-memory.json";
 const executorTimeoutMs = Number(process.env.ZH_EXECUTOR_TIMEOUT_MS ?? 15 * 60 * 1000);
-
-type SkillMemory = {
-  agentId: string;
-  skill: string;
-  runs: number;
-  confidence: number;
-  averageDurationMs: number;
-  updatedAt: string;
-};
-
-type TaskOutcome = {
-  taskId: string;
-  agentId: string;
-  type: string;
-  description: string;
-  changedFiles: string[];
-  validationPassed: boolean;
-  durationMs: number;
-  updatedAt: string;
-};
-
-type PersistedMemory = {
-  notes: Record<string, string[]>;
-  outcomes: TaskOutcome[];
-  skills: Record<string, SkillMemory>;
-};
-
-const persisted: PersistedMemory = loadMemory();
+const memoryStore = new HermesCompatibleMemoryStore(memoryPath);
 
 app.use(cors());
 app.use(express.json());
@@ -81,84 +54,6 @@ function hermesMemoryContractStatus(): {
       ? "Hermes exposes an in-process MemoryProvider contract, but no stable HTTP/task memory API is available to replace the adapter JSON store yet."
       : "Hermes native memory contract was not found; Brain is using its JSON fallback store."
   };
-}
-
-function loadMemory(): PersistedMemory {
-  try {
-    if (!fsSync.existsSync(memoryPath)) return { notes: {}, outcomes: [], skills: {} };
-    const parsed = JSON.parse(fsSync.readFileSync(memoryPath, "utf8")) as Partial<PersistedMemory>;
-    return {
-      notes: parsed.notes ?? {},
-      outcomes: parsed.outcomes ?? [],
-      skills: parsed.skills ?? {}
-    };
-  } catch (error) {
-    console.warn(`[brain] failed to load memory: ${(error as Error).message}`);
-    return { notes: {}, outcomes: [], skills: {} };
-  }
-}
-
-async function saveMemory(): Promise<void> {
-  await fs.mkdir(path.dirname(memoryPath), { recursive: true });
-  await fs.writeFile(memoryPath, JSON.stringify(persisted, null, 2), "utf8");
-}
-
-function remember(agentId: string, note: string): void {
-  const notes = persisted.notes[agentId] ?? memory.get(agentId) ?? [];
-  notes.unshift(`${new Date().toISOString()} ${note}`);
-  persisted.notes[agentId] = notes.slice(0, 50);
-  memory.set(agentId, notes.slice(0, 20));
-  void saveMemory();
-}
-
-function recentMemory(agentId: string): string {
-  const notes = (persisted.notes[agentId] ?? []).slice(0, 5);
-  const outcomes = persisted.outcomes.filter((outcome) => outcome.agentId === agentId).slice(0, 5);
-  const skills = Object.values(persisted.skills)
-    .filter((skill) => skill.agentId === agentId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, 5);
-  return [
-    notes.length ? `Recent notes:\n${notes.map((note) => `- ${note}`).join("\n")}` : "",
-    outcomes.length ? `Recent outcomes:\n${outcomes.map((outcome) => `- ${outcome.type} ${outcome.taskId}: ${outcome.validationPassed ? "passed" : "needs review"}; files=${outcome.changedFiles.join(", ") || "none"}`).join("\n")}` : "",
-    skills.length ? `Learned skills:\n${skills.map((skill) => `- ${skill.skill}: ${Math.round(skill.confidence * 100)}% over ${skill.runs} runs`).join("\n")}` : ""
-  ].filter(Boolean).join("\n\n") || "No prior memory for this agent yet.";
-}
-
-function recordOutcome(task: Task, changedFiles: string[], validationOutput: string, durationMs: number): {
-  beforeConfidence: number;
-  afterConfidence: number;
-  runs: number;
-} {
-  const key = `${task.agentId}:${task.type}`;
-  const existing = persisted.skills[key];
-  const validationPassed = !validationOutput.toLowerCase().includes("fatal") && !validationOutput.toLowerCase().includes("error:");
-  const runs = (existing?.runs ?? 0) + 1;
-  const beforeConfidence = existing?.confidence ?? 0.55;
-  const afterConfidence = Number(Math.min(0.98, beforeConfidence + (validationPassed ? 0.04 : 0.01)).toFixed(2));
-  const averageDurationMs = Math.round((((existing?.averageDurationMs ?? durationMs) * (runs - 1)) + durationMs) / runs);
-
-  persisted.skills[key] = {
-    agentId: task.agentId,
-    skill: task.type,
-    runs,
-    confidence: afterConfidence,
-    averageDurationMs,
-    updatedAt: new Date().toISOString()
-  };
-  persisted.outcomes.unshift({
-    taskId: task.id,
-    agentId: task.agentId,
-    type: task.type,
-    description: task.description,
-    changedFiles,
-    validationPassed,
-    durationMs,
-    updatedAt: new Date().toISOString()
-  });
-  persisted.outcomes.splice(100);
-  void saveMemory();
-  return { beforeConfidence, afterConfidence, runs };
 }
 
 async function checkHermes(): Promise<{ ok: boolean; status?: number; error?: string }> {
@@ -205,7 +100,7 @@ async function askRouter(task: Task, agentRole: string): Promise<string> {
               `Task: ${task.description}`,
               "",
               "Persistent memory:",
-              recentMemory(task.agentId)
+              memoryStore.recentMemory(task.agentId)
             ].join("\n")
           }
         ]
@@ -449,8 +344,8 @@ async function handleTask(task: Task): Promise<void> {
   activeTasks.set(task.id, completed);
   agent.status = "reviewing";
   const durationMs = Date.now() - startedAt;
-  const skill = recordOutcome(task, executorResult.changedFiles, executorResult.validationOutput, durationMs);
-  remember(agent.id, `Handled ${task.type} task ${task.id}: ${task.description}; files=${executorResult.changedFiles.join(", ") || "none"}; duration=${durationMs}ms`);
+  const skill = memoryStore.recordOutcome(task, executorResult.changedFiles, executorResult.validationOutput, durationMs);
+  memoryStore.remember(agent.id, `Handled ${task.type} task ${task.id}: ${task.description}; files=${executorResult.changedFiles.join(", ") || "none"}; duration=${durationMs}ms`);
   await bus.publish(ZHEvent.SKILL_LEARNED, {
     agentId: agent.id,
     skill: task.type,
@@ -471,7 +366,7 @@ bus.on<{ agentId: string }>(ZHEvent.AGENT_SPAWNED, async (message) => {
   const agent = agents.get(message.payload.agentId);
   if (!agent) return;
   agent.status = "idle";
-  remember(agent.id, "Agent profile initialized by HR.");
+  memoryStore.remember(agent.id, "Agent profile initialized by HR.");
   await bus.publish(ZHEvent.AGENT_READY, { agentId: agent.id });
 });
 
@@ -495,7 +390,10 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/api/memory", (_req, res) => {
+  const persisted = memoryStore.snapshot();
   res.json({
+    backend: persisted.backend,
+    formatVersion: persisted.formatVersion,
     notes: persisted.notes,
     outcomes: persisted.outcomes,
     skills: Object.values(persisted.skills),

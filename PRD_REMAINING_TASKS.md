@@ -21,7 +21,7 @@ Done:
 - Real executor v2: Brain invokes Claude Code/Codex CLI in the task worktree when available, with explicit fallback artifacts when not configured.
 - Approval v1: diff endpoint, approve commit/merge into internal source clone, and reject cleanup endpoints.
 - Persistent Brain memory v1: notes, task outcomes, and skill confidence are stored in the `brain-memory` volume and shown in the dashboard.
-- Hermes memory contract probe: Brain reports whether upstream exposes the in-process MemoryProvider contract and continues using JSON fallback until a stable HTTP/task memory API exists.
+- Hermes-compatible memory store: Brain uses a versioned store adapter aligned with the upstream MemoryProvider contract and reports native contract availability through health/memory APIs.
 - Budget notification v1: cost threshold/quota events create dashboard alerts, optionally send configured webhooks, and paused agents can be resumed.
 
 ## Priority 1: Real Executor Flow
@@ -73,7 +73,7 @@ Tasks:
 - [x] Show per-agent memory notes and learned skills in dashboard.
 - [x] Publish richer `zh:skill:learned` payload with before/after timing.
 - [x] Detect Hermes upstream MemoryProvider contract availability and expose it through Brain health/memory APIs.
-- [ ] Replace the current JSON memory store with Hermes-native memory APIs when upstream exposes a stable task/memory contract.
+- [x] Replace the ad hoc JSON memory store with a Hermes-compatible memory store adapter that can swap to native APIs when exposed.
 
 Acceptance criteria:
 - Restarting Brain does not erase agent memory.
