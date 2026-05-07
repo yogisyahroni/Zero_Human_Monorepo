@@ -20,6 +20,7 @@ Done:
 - Real executor v1: HR creates isolated git worktrees from an internal Docker clone, Brain writes executor artifacts, captures changed files, and runs validation.
 - Approval v1: diff endpoint, approve commit/merge into internal source clone, and reject cleanup endpoints.
 - Persistent Brain memory v1: notes, task outcomes, and skill confidence are stored in the `brain-memory` volume and shown in the dashboard.
+- Budget notification v1: cost threshold/quota events create dashboard alerts, optionally send configured webhooks, and paused agents can be resumed.
 
 ## Priority 1: Real Executor Flow
 
@@ -81,16 +82,17 @@ Acceptance criteria:
 Goal: make cost protection operational.
 
 Tasks:
-- [ ] Send configured webhook notification for `zh:cost:threshold`.
-- [ ] Send configured webhook notification for `zh:quota:exhausted`.
-- [ ] Add budget policy tests for per-agent and global caps.
-- [ ] Add dashboard alert row for paused agents and blocked dispatches.
-- [ ] Add reset/resume endpoint for manually unpausing an agent.
+- [x] Send configured webhook notification for `zh:cost:threshold`.
+- [x] Send configured webhook notification for `zh:quota:exhausted`.
+- [x] Add budget policy tests for per-agent and global caps.
+- [x] Add dashboard alert row for paused agents and blocked dispatches.
+- [x] Add reset/resume endpoint for manually unpausing an agent.
+- [ ] Add UI for editing budget caps without editing `zero-human.yaml`.
 
 Acceptance criteria:
-- Crossing threshold emits event and webhook.
+- Crossing threshold emits event, dashboard alert, and webhook when configured.
 - Exhausting budget pauses dispatch.
-- User can resume an agent after adjusting budget.
+- User can resume an agent after adjusting/resetting budget state.
 
 ## Priority 5: Patch Queue And Upstream Sync Hardening
 

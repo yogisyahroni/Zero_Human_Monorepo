@@ -97,4 +97,5 @@ notifications:
   events:
     - "zh:task:completed"
     - "zh:cost:threshold"
+    - "zh:quota:exhausted"
     - "zh:agent:error"

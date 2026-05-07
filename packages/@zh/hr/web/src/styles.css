@@ -132,6 +132,33 @@ h2 {
   font-size: 13px;
   margin-top: 5px;
 }
+.alertStrip {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.alertItem {
+  border: 1px solid #635b35;
+  background: rgba(47,43,25,.94);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.alertItem.critical {
+  border-color: rgba(255,107,93,.74);
+  background: rgba(55,27,25,.94);
+}
+.alertItem strong, .alertItem span {
+  display: block;
+}
+.alertItem span, .alertItem small {
+  color: var(--muted);
+  margin-top: 4px;
+  font-size: 13px;
+}
 .metric {
   min-height: 112px;
   border: 1px solid var(--line);

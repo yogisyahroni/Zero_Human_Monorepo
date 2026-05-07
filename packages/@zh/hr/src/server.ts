@@ -22,9 +22,19 @@ const app = express();
 const agents = new Map<string, Agent>(agentsFromConfig(config).map((agent) => [agent.id, agent]));
 const tasks = new Map<string, Task>();
 const events: Array<{ event: string; timestamp: string; summary: string }> = [];
+const alerts: Array<{
+  id: string;
+  event: string;
+  scope: "global" | "agent";
+  message: string;
+  severity: "warning" | "critical";
+  timestamp: string;
+  delivered: boolean;
+  error?: string;
+}> = [];
 const routerMetrics = { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 };
 const skillProgress = new Map<string, { agentId: string; skill: string; runs: number; confidence: number; lastTaskId?: string; updatedAt: string }>();
-const budgetFlags = { thresholdPublished: false, globalPaused: false };
+const budgetFlags = { thresholdPublished: false, globalPaused: false, pausedAgents: new Set<string>() };
 const bus = new RedisEventBus(config.infrastructure.redis_url, "hr");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
@@ -54,6 +64,51 @@ type BrainSkillSummary = BrainMemorySummary["skills"][number];
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
   events.splice(80);
+}
+
+async function sendNotification(event: string, message: string, payload: Record<string, unknown>): Promise<{ delivered: boolean; error?: string }> {
+  const webhookUrl = config.notifications.webhook_url?.trim();
+  if (!webhookUrl || !webhookUrl.startsWith("http")) return { delivered: false };
+  if (!config.notifications.events.includes(event)) return { delivered: false };
+
+  const body = webhookUrl.includes("discord")
+    ? { content: `**${event}**\n${message}`, embeds: [{ description: JSON.stringify(payload, null, 2).slice(0, 3800) }] }
+    : { event, message, payload, timestamp: new Date().toISOString() };
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) return { delivered: false, error: `Webhook returned HTTP ${response.status}` };
+    return { delivered: true };
+  } catch (error) {
+    return { delivered: false, error: (error as Error).message };
+  }
+}
+
+async function addBudgetAlert(
+  event: ZHEvent.COST_THRESHOLD | ZHEvent.QUOTA_EXHAUSTED,
+  scope: "global" | "agent",
+  message: string,
+  severity: "warning" | "critical",
+  payload: Record<string, unknown>
+): Promise<void> {
+  const delivery = await sendNotification(event, message, payload);
+  alerts.unshift({
+    id: `alert_${nanoid(8)}`,
+    event,
+    scope,
+    message,
+    severity,
+    timestamp: new Date().toISOString(),
+    delivered: delivery.delivered,
+    error: delivery.error
+  });
+  alerts.splice(50);
+  addEvent(event, message);
 }
 
 function sanitizeRef(value: string): string {
@@ -158,23 +213,27 @@ async function enforceBudget(reason: string): Promise<void> {
   if (globalSpent >= config.company.budget_usd && !budgetFlags.globalPaused) {
     budgetFlags.globalPaused = true;
     for (const agent of agents.values()) agent.status = "paused";
-    addEvent(ZHEvent.QUOTA_EXHAUSTED, `Global budget exhausted: $${globalSpent.toFixed(4)} / $${config.company.budget_usd}`);
-    if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, { scope: "global", spent: globalSpent, limit: config.company.budget_usd, reason });
+    const payload = { scope: "global", spent: globalSpent, limit: config.company.budget_usd, reason };
+    await addBudgetAlert(ZHEvent.QUOTA_EXHAUSTED, "global", `Global budget exhausted: $${globalSpent.toFixed(4)} / $${config.company.budget_usd}`, "critical", payload);
+    if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, payload);
     return;
   }
 
   const threshold = config.orchestrator.approval_threshold_usd;
   if (threshold > 0 && globalSpent >= threshold && !budgetFlags.thresholdPublished) {
     budgetFlags.thresholdPublished = true;
-    addEvent(ZHEvent.COST_THRESHOLD, `Approval threshold crossed: $${globalSpent.toFixed(4)} / $${threshold}`);
-    if (bus.connected) await bus.publish(ZHEvent.COST_THRESHOLD, { scope: "global", spent: globalSpent, limit: threshold, reason });
+    const payload = { scope: "global", spent: globalSpent, limit: threshold, reason };
+    await addBudgetAlert(ZHEvent.COST_THRESHOLD, "global", `Approval threshold crossed: $${globalSpent.toFixed(4)} / $${threshold}`, "warning", payload);
+    if (bus.connected) await bus.publish(ZHEvent.COST_THRESHOLD, payload);
   }
 
   for (const agent of agents.values()) {
-    if (agent.costAccumulatedUsd >= agent.maxBudgetUsd && agent.status !== "paused") {
+    if (agent.costAccumulatedUsd >= agent.maxBudgetUsd && agent.status !== "paused" && !budgetFlags.pausedAgents.has(agent.id)) {
+      budgetFlags.pausedAgents.add(agent.id);
       agent.status = "paused";
-      addEvent(ZHEvent.QUOTA_EXHAUSTED, `${agent.id} paused at $${agent.costAccumulatedUsd.toFixed(4)} / $${agent.maxBudgetUsd}`);
-      if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, { scope: "agent", agentId: agent.id, spent: agent.costAccumulatedUsd, limit: agent.maxBudgetUsd, reason });
+      const payload = { scope: "agent", agentId: agent.id, spent: agent.costAccumulatedUsd, limit: agent.maxBudgetUsd, reason };
+      await addBudgetAlert(ZHEvent.QUOTA_EXHAUSTED, "agent", `${agent.id} paused at $${agent.costAccumulatedUsd.toFixed(4)} / $${agent.maxBudgetUsd}`, "critical", payload);
+      if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, payload);
     }
   }
 }
@@ -374,6 +433,7 @@ app.get("/api/state", async (_req, res) => {
     serviceHealth: health,
     brainMemory: memory,
     skillProgress: Array.from(skillProgress.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    alerts,
     upstreams: upstreamStatus(),
     budget: {
       global: config.company.budget_usd,
@@ -391,6 +451,19 @@ app.post("/api/agents/:agentId/hire", async (req, res) => {
   agent.status = "idle";
   addEvent(ZHEvent.AGENT_SPAWNED, `Hired ${agent.id}`);
   if (bus.connected) await bus.publish(ZHEvent.AGENT_SPAWNED, { agentId: agent.id });
+  res.json(agent);
+});
+
+app.post("/api/agents/:agentId/resume", async (req, res) => {
+  const agent = agents.get(req.params.agentId);
+  if (!agent) return res.status(404).json({ error: "Agent not found" });
+  const { resetCost } = (req.body ?? {}) as { resetCost?: boolean };
+  if (resetCost) agent.costAccumulatedUsd = 0;
+  if (currentSpend() >= config.company.budget_usd) return res.status(423).json({ error: "Global budget is still exhausted" });
+  if (agent.costAccumulatedUsd >= agent.maxBudgetUsd) return res.status(423).json({ error: `${agent.id} is still over its budget cap` });
+  agent.status = "idle";
+  budgetFlags.pausedAgents.delete(agent.id);
+  addEvent("zh:agent:resumed", `Resumed ${agent.id}`);
   res.json(agent);
 });
 

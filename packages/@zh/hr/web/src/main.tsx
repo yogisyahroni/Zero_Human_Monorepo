@@ -55,6 +55,16 @@ type State = {
   agents: Agent[];
   tasks: Task[];
   events: Array<{ event: string; timestamp: string; summary: string }>;
+  alerts: Array<{
+    id: string;
+    event: string;
+    scope: "global" | "agent";
+    message: string;
+    severity: "warning" | "critical";
+    timestamp: string;
+    delivered: boolean;
+    error?: string;
+  }>;
   routerMetrics: { requests: number; costUsd: number; inputTokens: number; outputTokens: number };
   skillProgress: Array<{
     agentId: string;
@@ -106,6 +116,7 @@ const fallbackState: State = {
   agents: [],
   tasks: [],
   events: [],
+  alerts: [],
   routerMetrics: { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },
   skillProgress: [],
   serviceHealth: [],
@@ -150,6 +161,17 @@ function App() {
   async function hire(agentId: string) {
     setBusy(true);
     await fetch(`/api/agents/${agentId}/hire`, { method: "POST" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function resume(agentId: string) {
+    setBusy(true);
+    await fetch(`/api/agents/${agentId}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resetCost: true })
+    });
     await refresh();
     setBusy(false);
   }
@@ -237,6 +259,20 @@ function App() {
           </article>
         </section>
 
+        {state.alerts.length > 0 && (
+          <section className="alertStrip">
+            {state.alerts.slice(0, 3).map((alert) => (
+              <article className={`alertItem ${alert.severity}`} key={alert.id}>
+                <div>
+                  <strong>{alert.event}</strong>
+                  <span>{alert.message}</span>
+                </div>
+                <small>{alert.delivered ? "webhook sent" : alert.error ?? "local alert"}</small>
+              </article>
+            ))}
+          </section>
+        )}
+
         <section className="grid">
           <div className="panel agents">
             <div className="panelHead">
@@ -263,6 +299,11 @@ function App() {
                     <button onClick={() => hire(agent.id)} disabled={busy}>
                       <Plus size={15} /> Hire
                     </button>
+                    {agent.status === "paused" && (
+                      <button onClick={() => resume(agent.id)} disabled={busy}>
+                        Resume
+                      </button>
+                    )}
                   </div>
                 </article>
               ))}
