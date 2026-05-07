@@ -105,6 +105,10 @@ export interface SkillDefinition {
   roles: AgentRole[];
   triggers: string[];
   tools?: string[];
+  status?: "available" | "disabled";
+  requiresApproval?: boolean;
+  source?: string;
+  sourcePath?: string;
 }
 
 export interface ZeroHumanConfig {

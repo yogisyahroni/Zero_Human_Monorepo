@@ -50,7 +50,11 @@ const configSchema = z.object({
     description: z.string(),
     roles: z.array(z.enum(["cto", "frontend", "backend", "qa", "devops", "product", "design", "marketing", "sales", "support", "finance", "operations", "research", "legal"])),
     triggers: z.array(z.string()),
-    tools: z.array(z.string()).optional()
+    tools: z.array(z.string()).optional(),
+    status: z.enum(["available", "disabled"]).optional(),
+    requiresApproval: z.boolean().optional(),
+    source: z.string().optional(),
+    sourcePath: z.string().optional()
   })).optional(),
   orchestrator: z.object({
     port: z.number(),
@@ -101,7 +105,15 @@ export function resolveConfigPath(configPath = process.env.ZH_CONFIG_PATH): stri
 export function loadConfig(configPath?: string): ZeroHumanConfig {
   const resolved = resolveConfigPath(configPath);
   const raw = fs.readFileSync(resolved, "utf8");
-  const parsed = expandObject(yaml.load(raw));
+  const parsed = expandObject(yaml.load(raw)) as Partial<ZeroHumanConfig>;
+  const generatedPath = path.join(path.dirname(resolved), "skills.generated.yaml");
+  if (fs.existsSync(generatedPath)) {
+    const generated = expandObject(yaml.load(fs.readFileSync(generatedPath, "utf8"))) as Partial<ZeroHumanConfig>;
+    parsed.skill_registry = {
+      ...(generated.skill_registry ?? {}),
+      ...(parsed.skill_registry ?? {})
+    };
+  }
   return configSchema.parse(parsed);
 }
 

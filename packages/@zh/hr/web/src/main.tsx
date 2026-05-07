@@ -159,6 +159,10 @@ type State = {
     roles: string[];
     triggers: string[];
     tools?: string[];
+    status?: "available" | "disabled";
+    requiresApproval?: boolean;
+    source?: string;
+    sourcePath?: string;
   }>;
   budget: { global: number; allocated: number; spent: number; currency: string };
   combos: Record<string, Array<{ provider: string; model: string }>>;
@@ -888,7 +892,7 @@ function App() {
                 <article className="registrySkill" key={name}>
                   <div>
                     <strong>{name.replaceAll("_", " ")}</strong>
-                    <span>{skill.category} · {skill.roles.join(", ")}</span>
+                    <span>{skill.category} · {skill.roles.join(", ")}{skill.requiresApproval ? " · approval" : ""}</span>
                   </div>
                   <p>{skill.description}</p>
                   <div className="triggerRow">
