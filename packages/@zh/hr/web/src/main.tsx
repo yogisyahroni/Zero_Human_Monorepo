@@ -38,6 +38,8 @@ type Task = {
   agentId: string;
   type: string;
   description: string;
+  requiredSkills?: string[];
+  roleGuidance?: string;
   priority: 1 | 2 | 3;
   status: string;
   repositoryId?: string;
@@ -243,6 +245,10 @@ function App() {
   const budgetRemaining = Math.max(0, state.budget.global - state.budget.spent);
   const pausedAgents = state.agents.filter((agent) => agent.status === "paused").length;
   const currentView = views.find((view) => view.id === activeView) ?? views[0];
+  const roleSkillRows = state.agents.map((agent) => ({
+    agent,
+    learned: state.skillProgress.filter((skill) => skill.agentId === agent.id)
+  }));
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -683,7 +689,7 @@ function App() {
             </div>
             <div className="skillMatrix">
               {state.skillProgress.length === 0 && <div className="empty">No skill events yet. Dispatch a task to start memory growth.</div>}
-              {state.skillProgress.slice(0, 6).map((skill) => (
+              {state.skillProgress.slice(0, 10).map((skill) => (
                 <article className="skillCard" key={`${skill.agentId}-${skill.skill}`}>
                   <div>
                     <strong>{skill.skill}</strong>
@@ -693,6 +699,24 @@ function App() {
                     <span>{Math.round(skill.confidence * 100)}%</span>
                     <div><i style={{ width: `${Math.round(skill.confidence * 100)}%` }} /></div>
                   </div>
+                </article>
+              ))}
+            </div>
+            <div className="roleSkillBoard">
+              {roleSkillRows.map(({ agent, learned }) => (
+                <article className="roleSkillCard" key={agent.id}>
+                  <div>
+                    <strong>{agent.id.replaceAll("_", " ")}</strong>
+                    <span>{agent.role} · {agent.executor}</span>
+                  </div>
+                  <div className="skillRow">
+                    {agent.skills.map((skill) => <span key={skill}>{skill}</span>)}
+                  </div>
+                  <small>
+                    {learned.length
+                      ? `${learned.length} learned skills tracked by Hermes Brain`
+                      : "Waiting for first handled task"}
+                  </small>
                 </article>
               ))}
             </div>
@@ -738,6 +762,11 @@ function App() {
                     <span>{task.id} · {task.agentId} · P{task.priority}</span>
                     {task.repositoryName && <span>{task.repositoryName}</span>}
                     {task.branchName && <span>{task.branchName}</span>}
+                    {task.requiredSkills && task.requiredSkills.length > 0 && (
+                      <div className="changeList">
+                        {task.requiredSkills.slice(0, 8).map((skill) => <code key={skill}>{skill}</code>)}
+                      </div>
+                    )}
                     {task.worktreePath && <small className="monoPath">{task.worktreePath}</small>}
                     {task.hostApplyStatus && (
                       <span>

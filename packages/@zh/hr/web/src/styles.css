@@ -444,6 +444,29 @@ textarea {
   display: grid;
   gap: 10px;
 }
+.roleSkillBoard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.roleSkillCard {
+  border: 1px solid var(--line);
+  background: #111514;
+  border-radius: 8px;
+  padding: 12px;
+}
+.roleSkillCard strong,
+.roleSkillCard span,
+.roleSkillCard small {
+  display: block;
+}
+.roleSkillCard span,
+.roleSkillCard small {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
 .memoryList {
   display: grid;
   gap: 10px;

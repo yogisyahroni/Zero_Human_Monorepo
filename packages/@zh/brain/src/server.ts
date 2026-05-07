@@ -26,6 +26,52 @@ const memoryStore = new HermesCompatibleMemoryStore(memoryPath);
 app.use(cors());
 app.use(express.json());
 
+const roleSkillCatalog: Record<Agent["role"], string[]> = {
+  cto: ["architecture", "system_design", "technical_strategy", "code_review"],
+  frontend: ["ui_implementation", "react", "accessibility", "state_management"],
+  backend: ["api_design", "database", "integration", "testing"],
+  qa: ["test_planning", "regression_testing", "e2e_validation", "risk_analysis"],
+  devops: ["docker", "ci_cd", "deployment", "health_checks"]
+};
+
+const taskSkillCatalog: Record<Task["type"], string[]> = {
+  architecture: ["architecture", "system_design", "technical_strategy"],
+  coding: ["implementation", "code_editing", "repository_navigation"],
+  review: ["code_review", "risk_analysis", "test_gap_analysis"],
+  test: ["testing", "test_automation", "regression_testing"],
+  deploy: ["deployment", "ci_cd", "release_validation"]
+};
+
+function keywordSkills(description: string): string[] {
+  const lowered = description.toLowerCase();
+  return [
+    lowered.match(/\b(ui|frontend|react|css|layout|browser)\b/) ? "frontend_implementation" : "",
+    lowered.match(/\b(api|backend|database|server|auth|endpoint)\b/) ? "backend_integration" : "",
+    lowered.match(/\b(docker|container|compose|deploy|ci|github action)\b/) ? "devops_delivery" : "",
+    lowered.match(/\b(test|qa|e2e|validation|bug|error|fix)\b/) ? "quality_validation" : "",
+    lowered.match(/\b(memory|skill|agent|role|hermes)\b/) ? "agent_memory_orchestration" : ""
+  ].filter(Boolean);
+}
+
+function requiredSkillsForTask(task: Task, agent: Agent): string[] {
+  return Array.from(new Set([
+    ...roleSkillCatalog[agent.role],
+    ...agent.skills,
+    ...taskSkillCatalog[task.type],
+    ...keywordSkills(task.description)
+  ])).slice(0, 10);
+}
+
+function roleGuidanceForTask(agent: Agent, requiredSkills: string[]): string {
+  return [
+    `Role: ${agent.role}`,
+    `Executor: ${agent.executor}`,
+    `Required skills: ${requiredSkills.join(", ")}`,
+    "Stay inside this role. Prefer the listed skills when deciding how to plan, edit, validate, and summarize work.",
+    "If the task needs a skill outside this list, name the gap in the result instead of silently drifting role."
+  ].join("\n");
+}
+
 function hermesMemoryContractStatus(): {
   mode: "json-fallback" | "native-contract-detected";
   stableApi: boolean;
@@ -66,7 +112,7 @@ async function checkHermes(): Promise<{ ok: boolean; status?: number; error?: st
   }
 }
 
-async function askRouter(task: Task, agentRole: string): Promise<string> {
+async function askRouter(task: Task, agent: Agent): Promise<string> {
   if (!routerUrl) {
     return "Router URL is not configured, so Brain recorded the task without an LLM planning pass.";
   }
@@ -88,16 +134,21 @@ async function askRouter(task: Task, agentRole: string): Promise<string> {
             role: "system",
             content: [
               "You are the Zero-Human Brain adapter. Produce a concise execution note for the task queue.",
-              "Use persistent memory when it helps avoid repeating mistakes."
+              "Use persistent memory when it helps avoid repeating mistakes.",
+              "Respect the agent role and required skills. Do not assign work outside the role unless the task explicitly requires escalation."
             ].join(" ")
           },
           {
             role: "user",
             content: [
-              `Agent role: ${agentRole}`,
+              `Agent role: ${agent.role}`,
               `Task type: ${task.type}`,
               `Priority: P${task.priority}`,
+              `Required skills: ${(task.requiredSkills ?? []).join(", ") || "none"}`,
               `Task: ${task.description}`,
+              "",
+              "Role guidance:",
+              task.roleGuidance ?? "No role guidance provided.",
               "",
               "Persistent memory:",
               memoryStore.recentMemory(task.agentId)
@@ -187,6 +238,10 @@ function executorPrompt(task: Task, agent: Agent, executionNote: string): string
     `Task type: ${task.type}`,
     `Priority: P${task.priority}`,
     `Branch: ${task.branchName ?? "unknown"}`,
+    `Required skills: ${(task.requiredSkills ?? []).join(", ") || "none"}`,
+    "",
+    "Role contract:",
+    task.roleGuidance ?? roleGuidanceForTask(agent, task.requiredSkills ?? requiredSkillsForTask(task, agent)),
     "",
     "Task:",
     task.description,
@@ -311,21 +366,24 @@ async function handleTask(task: Task): Promise<void> {
     await bus.publish(ZHEvent.AGENT_ERROR, { taskId: task.id, message: `Unknown agent ${task.agentId}` });
     return;
   }
+  const requiredSkills = task.requiredSkills?.length ? task.requiredSkills : requiredSkillsForTask(task, agent);
+  const roleGuidance = task.roleGuidance ?? roleGuidanceForTask(agent, requiredSkills);
+  const guidedTask: Task = { ...task, requiredSkills, roleGuidance };
 
   agent.status = "working";
-  activeTasks.set(task.id, { ...task, status: "in_progress", updatedAt: new Date().toISOString() });
-  await bus.publish(ZHEvent.TASK_STARTED, { ...task, status: "in_progress", updatedAt: new Date().toISOString() });
+  activeTasks.set(guidedTask.id, { ...guidedTask, status: "in_progress", updatedAt: new Date().toISOString() });
+  await bus.publish(ZHEvent.TASK_STARTED, { ...guidedTask, status: "in_progress", updatedAt: new Date().toISOString() });
 
   const [hermes, executionNote] = await Promise.all([
     checkHermes(),
-    askRouter(task, agent.role)
+    askRouter(guidedTask, agent)
   ]);
   let executorResult: Awaited<ReturnType<typeof runTaskExecutor>>;
   try {
-    executorResult = await runTaskExecutor(task, agent, executionNote);
+    executorResult = await runTaskExecutor(guidedTask, agent, executionNote);
   } catch (error) {
     const failed: Task = {
-      ...task,
+      ...guidedTask,
       status: "error",
       result: `Executor failed: ${(error as Error).message}`,
       updatedAt: new Date().toISOString()
@@ -338,10 +396,11 @@ async function handleTask(task: Task): Promise<void> {
   }
 
   const completed: Task = {
-    ...task,
+    ...guidedTask,
     status: "pending_review",
     result: [
       `${agent.role.toUpperCase()} prepared this ${task.type} task through the Hermes/Router bridge.`,
+      `Role skills: ${requiredSkills.join(", ")}.`,
       `Hermes dashboard: ${hermes.ok ? `online (${hermes.status})` : `unavailable (${hermes.error ?? hermes.status ?? "unknown"})`}.`,
       `Router note: ${executionNote}`,
       `Executor: ${executorResult.executorOutput}`,
@@ -357,20 +416,23 @@ async function handleTask(task: Task): Promise<void> {
   activeTasks.set(task.id, completed);
   agent.status = "reviewing";
   const durationMs = Date.now() - startedAt;
-  const skill = memoryStore.recordOutcome(task, executorResult.changedFiles, executorResult.validationOutput, durationMs);
-  memoryStore.remember(agent.id, `Handled ${task.type} task ${task.id}: ${task.description}; files=${executorResult.changedFiles.join(", ") || "none"}; duration=${durationMs}ms`);
-  await bus.publish(ZHEvent.SKILL_LEARNED, {
-    agentId: agent.id,
-    skill: task.type,
-    taskId: task.id,
-    confidence: skill.afterConfidence,
-    beforeConfidence: skill.beforeConfidence,
-    afterConfidence: skill.afterConfidence,
-    runs: skill.runs,
-    durationMs,
-    changedFiles: executorResult.changedFiles,
-    validationPassed: !executorResult.validationOutput.toLowerCase().includes("fatal")
-  });
+  const skill = memoryStore.recordOutcome(guidedTask, executorResult.changedFiles, executorResult.validationOutput, durationMs);
+  memoryStore.remember(agent.id, `Handled ${task.type} task ${task.id}: ${task.description}; skills=${requiredSkills.join(", ")}; files=${executorResult.changedFiles.join(", ") || "none"}; duration=${durationMs}ms`);
+  for (const learnedSkill of skill.skills) {
+    await bus.publish(ZHEvent.SKILL_LEARNED, {
+      agentId: agent.id,
+      role: agent.role,
+      skill: learnedSkill.skill,
+      taskId: task.id,
+      confidence: learnedSkill.confidence,
+      beforeConfidence: learnedSkill.skill === task.type ? skill.beforeConfidence : undefined,
+      afterConfidence: learnedSkill.confidence,
+      runs: learnedSkill.runs,
+      durationMs,
+      changedFiles: executorResult.changedFiles,
+      validationPassed: !executorResult.validationOutput.toLowerCase().includes("fatal")
+    });
+  }
   await bus.publish(ZHEvent.TASK_COMPLETED, completed);
 }
 
@@ -433,6 +495,11 @@ app.post("/api/tasks", async (req, res) => {
   } as Task;
   if (!task.agentId || !task.description) {
     return res.status(400).json({ error: "agentId and description are required" });
+  }
+  const agent = agents.get(task.agentId);
+  if (agent) {
+    task.requiredSkills = task.requiredSkills?.length ? task.requiredSkills : requiredSkillsForTask(task, agent);
+    task.roleGuidance = task.roleGuidance ?? roleGuidanceForTask(agent, task.requiredSkills);
   }
   activeTasks.set(task.id, task);
   void handleTask(task);

@@ -60,7 +60,7 @@ type BrainMemorySummary = {
   agentCount: number;
   entries: number;
   outcomes: number;
-  skills: Array<{ agentId: string; skill: string; runs: number; confidence: number; averageDurationMs?: number; updatedAt: string }>;
+  skills: Array<{ agentId: string; skill: string; runs: number; confidence: number; averageDurationMs?: number; lastTaskId?: string; updatedAt: string }>;
   recentNotes: Array<{ agentId: string; note: string }>;
   error?: string;
 };
@@ -171,6 +171,45 @@ function getRepository(repositoryId?: string): RegisteredRepository {
 
 function isCloneableRepositoryUrl(value: string): boolean {
   return /^(https?:\/\/|git@|ssh:\/\/|file:\/\/)/i.test(value.trim());
+}
+
+const roleSkillCatalog: Record<Agent["role"], string[]> = {
+  cto: ["architecture", "system_design", "technical_strategy", "code_review"],
+  frontend: ["ui_implementation", "react", "accessibility", "state_management"],
+  backend: ["api_design", "database", "integration", "testing"],
+  qa: ["test_planning", "regression_testing", "e2e_validation", "risk_analysis"],
+  devops: ["docker", "ci_cd", "deployment", "health_checks"]
+};
+
+const taskSkillCatalog: Record<TaskType, string[]> = {
+  architecture: ["architecture", "system_design", "technical_strategy"],
+  coding: ["implementation", "code_editing", "repository_navigation"],
+  review: ["code_review", "risk_analysis", "test_gap_analysis"],
+  test: ["testing", "test_automation", "regression_testing"],
+  deploy: ["deployment", "ci_cd", "release_validation"]
+};
+
+function inferRequiredSkills(agent: Agent, type: TaskType, description: string): string[] {
+  const lowered = description.toLowerCase();
+  return Array.from(new Set([
+    ...roleSkillCatalog[agent.role],
+    ...agent.skills,
+    ...taskSkillCatalog[type],
+    lowered.match(/\b(ui|frontend|react|css|layout|browser)\b/) ? "frontend_implementation" : "",
+    lowered.match(/\b(api|backend|database|server|auth|endpoint)\b/) ? "backend_integration" : "",
+    lowered.match(/\b(docker|container|compose|deploy|ci|github action)\b/) ? "devops_delivery" : "",
+    lowered.match(/\b(test|qa|e2e|validation|bug|error|fix)\b/) ? "quality_validation" : "",
+    lowered.match(/\b(memory|skill|agent|role|hermes)\b/) ? "agent_memory_orchestration" : ""
+  ].filter(Boolean))).slice(0, 10);
+}
+
+function roleGuidance(agent: Agent, requiredSkills: string[]): string {
+  return [
+    `Role: ${agent.role}`,
+    `Executor: ${agent.executor}`,
+    `Required skills: ${requiredSkills.join(", ")}`,
+    "Stay inside this role and use the relevant skills before editing or validating."
+  ].join("\n");
 }
 
 async function sendNotification(event: string, message: string, payload: Record<string, unknown>): Promise<{ delivered: boolean; error?: string }> {
@@ -668,7 +707,7 @@ bus.on<{ agentId: string }>(ZHEvent.AGENT_READY, (message) => {
   const agent = agents.get(message.payload.agentId);
   if (agent && agent.status !== "paused") agent.status = "idle";
 });
-bus.on<{ agentId: string; skill: string; taskId?: string; confidence?: number; afterConfidence?: number; runs?: number }>(ZHEvent.SKILL_LEARNED, (message) => {
+bus.on<{ agentId: string; role?: string; skill: string; taskId?: string; confidence?: number; afterConfidence?: number; runs?: number }>(ZHEvent.SKILL_LEARNED, (message) => {
   const key = `${message.payload.agentId}:${message.payload.skill}`;
   const existing = skillProgress.get(key);
   const runs = message.payload.runs ?? (existing?.runs ?? 0) + 1;
@@ -701,6 +740,19 @@ app.get("/api/state", async (_req, res) => {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
   const spent = currentSpend();
   const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
+  const memorySkills = memory.skills.map((skill) => ({
+    agentId: skill.agentId,
+    skill: skill.skill,
+    runs: skill.runs,
+    confidence: skill.confidence,
+    lastTaskId: skill.lastTaskId,
+    updatedAt: skill.updatedAt
+  }));
+  const liveSkillKeys = new Set(skillProgress.keys());
+  const mergedSkillProgress = [
+    ...Array.from(skillProgress.values()),
+    ...memorySkills.filter((skill) => !liveSkillKeys.has(`${skill.agentId}:${skill.skill}`))
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   res.json({
     company: companyState,
     infrastructure: {
@@ -715,7 +767,7 @@ app.get("/api/state", async (_req, res) => {
     routerMetrics,
     serviceHealth: health,
     brainMemory: memory,
-    skillProgress: Array.from(skillProgress.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    skillProgress: mergedSkillProgress,
     alerts,
     upstreams: upstreamStatus(),
     repositories: listRepositories(),
@@ -872,8 +924,11 @@ app.post("/api/tasks", async (req, res) => {
   if (!agentId || !agents.has(agentId)) return res.status(400).json({ error: "Valid agentId is required" });
   if (!description?.trim()) return res.status(400).json({ error: "description is required" });
   const selectedAgent = agents.get(agentId);
+  if (!selectedAgent) return res.status(400).json({ error: "Valid agentId is required" });
   if (selectedAgent?.status === "paused") return res.status(423).json({ error: `${agentId} is paused by budget protection` });
   if (currentSpend() >= companyState.budget_usd) return res.status(423).json({ error: "Global budget is exhausted" });
+  const taskType = type ?? "coding";
+  const requiredSkills = inferRequiredSkills(selectedAgent, taskType, description.trim());
 
   const now = new Date().toISOString();
   const id = `task_${nanoid(8)}`;
@@ -888,9 +943,11 @@ app.post("/api/tasks", async (req, res) => {
   const task: Task = {
     id,
     agentId,
-    type: type ?? "coding",
+    type: taskType,
     description: description.trim(),
     context: context ?? [],
+    requiredSkills,
+    roleGuidance: roleGuidance(selectedAgent, requiredSkills),
     priority: priority ?? 2,
     status: "assigned",
     repositoryId: worktree.repository.id,

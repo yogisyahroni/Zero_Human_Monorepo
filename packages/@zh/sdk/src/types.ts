@@ -33,6 +33,8 @@ export interface Task {
   type: TaskType;
   description: string;
   context?: string[];
+  requiredSkills?: string[];
+  roleGuidance?: string;
   priority: 1 | 2 | 3;
   status: TaskStatus;
   repositoryId?: string;

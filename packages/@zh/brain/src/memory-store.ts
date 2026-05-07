@@ -5,10 +5,12 @@ import type { Task } from "@zh/sdk";
 
 export type SkillMemory = {
   agentId: string;
+  role?: string;
   skill: string;
   runs: number;
   confidence: number;
   averageDurationMs: number;
+  lastTaskId?: string;
   updatedAt: string;
 };
 
@@ -91,23 +93,30 @@ export class HermesCompatibleMemoryStore {
     beforeConfidence: number;
     afterConfidence: number;
     runs: number;
+    skills: SkillMemory[];
   } {
-    const key = `${task.agentId}:${task.type}`;
-    const existing = this.persisted.skills[key];
+    const trackedSkills = Array.from(new Set([task.type, ...(task.requiredSkills ?? [])].map((skill) => skill.trim()).filter(Boolean)));
     const passed = validationPassed(validationOutput);
-    const runs = (existing?.runs ?? 0) + 1;
-    const beforeConfidence = existing?.confidence ?? 0.55;
-    const afterConfidence = Number(Math.min(0.98, beforeConfidence + (passed ? 0.04 : 0.01)).toFixed(2));
-    const averageDurationMs = Math.round((((existing?.averageDurationMs ?? durationMs) * (runs - 1)) + durationMs) / runs);
-
-    this.persisted.skills[key] = {
-      agentId: task.agentId,
-      skill: task.type,
-      runs,
-      confidence: afterConfidence,
-      averageDurationMs,
-      updatedAt: new Date().toISOString()
-    };
+    const updatedSkills = trackedSkills.map((trackedSkill) => {
+      const key = `${task.agentId}:${trackedSkill}`;
+      const existing = this.persisted.skills[key];
+      const runs = (existing?.runs ?? 0) + 1;
+      const beforeConfidence = existing?.confidence ?? 0.55;
+      const afterConfidence = Number(Math.min(0.98, beforeConfidence + (passed ? 0.04 : 0.01)).toFixed(2));
+      const averageDurationMs = Math.round((((existing?.averageDurationMs ?? durationMs) * (runs - 1)) + durationMs) / runs);
+      const skillMemory: SkillMemory = {
+        agentId: task.agentId,
+        role: task.roleGuidance?.split("\n")[0]?.replace(/^Role:\s*/i, "").trim(),
+        skill: trackedSkill,
+        runs,
+        confidence: afterConfidence,
+        averageDurationMs,
+        lastTaskId: task.id,
+        updatedAt: new Date().toISOString()
+      };
+      this.persisted.skills[key] = skillMemory;
+      return skillMemory;
+    });
     this.persisted.outcomes.unshift({
       taskId: task.id,
       agentId: task.agentId,
@@ -120,7 +129,13 @@ export class HermesCompatibleMemoryStore {
     });
     this.persisted.outcomes.splice(100);
     void this.save();
-    return { beforeConfidence, afterConfidence, runs };
+    const primary = updatedSkills[0];
+    return {
+      beforeConfidence: Number(Math.max(0.51, (primary?.confidence ?? 0.59) - (passed ? 0.04 : 0.01)).toFixed(2)),
+      afterConfidence: primary?.confidence ?? 0.55,
+      runs: primary?.runs ?? 0,
+      skills: updatedSkills
+    };
   }
 
   private load(): PersistedMemory {
