@@ -26,4 +26,36 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+CODEX_HOME_DIR="${CODEX_HOME:-/paperclip/.codex}"
+CODEX_ROUTER_BASE_URL="${CODEX_OPENAI_BASE_URL:-${OPENAI_BASE_URL:-http://9router:20128/v1}}"
+CODEX_ROUTER_MODEL="${CODEX_MODEL:-combotest}"
+
+if [ "${ZH_ENABLE_CODEX_9ROUTER_CONFIG:-true}" = "true" ]; then
+    mkdir -p "$CODEX_HOME_DIR"
+    cat > "$CODEX_HOME_DIR/config.toml" <<EOF
+model_provider = "9router"
+model = "$CODEX_ROUTER_MODEL"
+
+[model_providers.9router]
+name = "9Router"
+base_url = "$CODEX_ROUTER_BASE_URL"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[projects."/app"]
+trust_level = "trusted"
+
+[projects."/paperclip"]
+trust_level = "trusted"
+EOF
+
+    for managed_home in /paperclip/instances/default/companies/*/codex-home; do
+        if [ -d "$managed_home" ]; then
+            cp "$CODEX_HOME_DIR/config.toml" "$managed_home/config.toml"
+        fi
+    done
+
+    chown -R node:node "$CODEX_HOME_DIR" /paperclip/instances 2>/dev/null || true
+fi
+
 exec gosu node "$@"
