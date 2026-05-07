@@ -163,6 +163,8 @@ type State = {
     requiresApproval?: boolean;
     source?: string;
     sourcePath?: string;
+    installs?: number;
+    isOfficial?: boolean;
   }>;
   budget: { global: number; allocated: number; spent: number; currency: string };
   combos: Record<string, Array<{ provider: string; model: string }>>;
@@ -892,7 +894,16 @@ function App() {
                 <article className="registrySkill" key={name}>
                   <div>
                     <strong>{name.replaceAll("_", " ")}</strong>
-                    <span>{skill.category} · {skill.roles.join(", ")}{skill.requiresApproval ? " · approval" : ""}</span>
+                    <span>
+                      {[
+                        skill.category,
+                        skill.roles.join(", "),
+                        skill.source,
+                        skill.isOfficial ? "official" : "",
+                        typeof skill.installs === "number" ? `${skill.installs.toLocaleString()} installs` : "",
+                        skill.requiresApproval ? "approval" : ""
+                      ].filter(Boolean).join(" · ")}
+                    </span>
                   </div>
                   <p>{skill.description}</p>
                   <div className="triggerRow">

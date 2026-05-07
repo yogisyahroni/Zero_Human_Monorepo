@@ -109,6 +109,8 @@ export interface SkillDefinition {
   requiresApproval?: boolean;
   source?: string;
   sourcePath?: string;
+  installs?: number;
+  isOfficial?: boolean;
 }
 
 export interface ZeroHumanConfig {

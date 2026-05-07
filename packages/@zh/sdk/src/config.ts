@@ -54,7 +54,9 @@ const configSchema = z.object({
     status: z.enum(["available", "disabled"]).optional(),
     requiresApproval: z.boolean().optional(),
     source: z.string().optional(),
-    sourcePath: z.string().optional()
+    sourcePath: z.string().optional(),
+    installs: z.number().optional(),
+    isOfficial: z.boolean().optional()
   })).optional(),
   orchestrator: z.object({
     port: z.number(),
@@ -106,11 +108,21 @@ export function loadConfig(configPath?: string): ZeroHumanConfig {
   const resolved = resolveConfigPath(configPath);
   const raw = fs.readFileSync(resolved, "utf8");
   const parsed = expandObject(yaml.load(raw)) as Partial<ZeroHumanConfig>;
-  const generatedPath = path.join(path.dirname(resolved), "skills.generated.yaml");
-  if (fs.existsSync(generatedPath)) {
+  const generatedSkillRegistry = [
+    "skills.generated.yaml",
+    "skills.skills-sh.generated.yaml"
+  ].reduce<NonNullable<ZeroHumanConfig["skill_registry"]>>((registry, fileName) => {
+    const generatedPath = path.join(path.dirname(resolved), fileName);
+    if (!fs.existsSync(generatedPath)) return registry;
     const generated = expandObject(yaml.load(fs.readFileSync(generatedPath, "utf8"))) as Partial<ZeroHumanConfig>;
+    return {
+      ...registry,
+      ...(generated.skill_registry ?? {})
+    };
+  }, {});
+  if (Object.keys(generatedSkillRegistry).length > 0) {
     parsed.skill_registry = {
-      ...(generated.skill_registry ?? {}),
+      ...generatedSkillRegistry,
       ...(parsed.skill_registry ?? {})
     };
   }
