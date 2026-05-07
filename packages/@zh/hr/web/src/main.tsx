@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
+type ViewId = "operations" | "agents" | "memory" | "gateway";
+
 type Agent = {
   id: string;
   role: string;
@@ -154,8 +156,44 @@ function money(value: number): string {
   return `$${value.toFixed(value >= 10 ? 0 : 3)}`;
 }
 
+const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; description: string; icon: React.ReactNode }> = [
+  {
+    id: "operations",
+    label: "Operations",
+    eyebrow: "Command center",
+    title: "Operations board",
+    description: "Track budget gates, active task worktrees, review state, and live execution events.",
+    icon: <Activity size={19} />
+  },
+  {
+    id: "agents",
+    label: "Agents",
+    eyebrow: "Workforce",
+    title: "Agent bench",
+    description: "Hire operators, choose a repository, and dispatch coding work into isolated worktrees.",
+    icon: <Users size={19} />
+  },
+  {
+    id: "memory",
+    label: "Memory",
+    eyebrow: "Hermes brain",
+    title: "Persistent memory",
+    description: "Inspect learned skills, recent notes, outcomes, and the Redis event trail feeding Hermes.",
+    icon: <Brain size={19} />
+  },
+  {
+    id: "gateway",
+    label: "Gateway",
+    eyebrow: "AI routing",
+    title: "9Router gateway",
+    description: "Manage repository intake, inspect service health, upstream code, and model combo routing.",
+    icon: <RadioTower size={19} />
+  }
+];
+
 function App() {
   const [state, setState] = useState<State>(fallbackState);
+  const [activeView, setActiveView] = useState<ViewId>("operations");
   const [selectedAgent, setSelectedAgent] = useState("cto");
   const [description, setDescription] = useState("Create an architecture plan for the authentication module.");
   const [type, setType] = useState("architecture");
@@ -204,6 +242,7 @@ function App() {
   const selectedAgentProfile = state.agents.find((agent) => agent.id === selectedAgent);
   const budgetRemaining = Math.max(0, state.budget.global - state.budget.spent);
   const pausedAgents = state.agents.filter((agent) => agent.status === "paused").length;
+  const currentView = views.find((view) => view.id === activeView) ?? views[0];
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -304,10 +343,18 @@ function App() {
     <main className="shell">
       <aside className="rail">
         <div className="mark"><CircuitBoard size={22} /></div>
-        <button title="Operations"><Activity size={19} /></button>
-        <button title="Agents"><Users size={19} /></button>
-        <button title="Memory"><Brain size={19} /></button>
-        <button title="Gateway"><RadioTower size={19} /></button>
+        {views.map((view) => (
+          <button
+            className={activeView === view.id ? "active" : ""}
+            title={view.label}
+            aria-label={view.label}
+            aria-pressed={activeView === view.id}
+            onClick={() => setActiveView(view.id)}
+            key={view.id}
+          >
+            {view.icon}
+          </button>
+        ))}
       </aside>
 
       <section className="workspace">
@@ -322,6 +369,25 @@ function App() {
           </button>
         </header>
 
+        <section className="viewHeader">
+          <div>
+            <p className="eyebrow">{currentView.eyebrow}</p>
+            <h2>{currentView.title}</h2>
+            <p>{currentView.description}</p>
+          </div>
+          <div className="viewTabs" aria-label="Zero Human sections">
+            {views.map((view) => (
+              <button
+                className={activeView === view.id ? "active" : ""}
+                onClick={() => setActiveView(view.id)}
+                key={view.id}
+              >
+                {view.icon} {view.label}
+              </button>
+            ))}
+          </div>
+        </section>
+
         <section className="metrics">
           <Metric icon={<BadgeDollarSign />} label="Budget spent" value={`${money(state.budget.spent)} / ${money(state.budget.global)}`} />
           <Metric icon={<Users />} label="Agents online" value={`${state.agents.length}`} />
@@ -330,24 +396,26 @@ function App() {
           <Metric icon={<FolderGit2 />} label="Repos ready" value={`${state.repositories.filter((repo) => repo.status === "ready").length}`} />
         </section>
 
-        <section className="serviceStrip">
-          {state.serviceHealth.map((service) => (
-            <article className="servicePill" key={service.name}>
+        {(activeView === "operations" || activeView === "gateway") && (
+          <section className="serviceStrip">
+            {state.serviceHealth.map((service) => (
+              <article className="servicePill" key={service.name}>
+                <div>
+                  <strong>{service.name}</strong>
+                  <span>{service.status ?? "offline"} · {service.latencyMs ?? 0}ms</span>
+                </div>
+                <Status value={service.ok ? "online" : "error"} />
+              </article>
+            ))}
+            <article className="servicePill">
               <div>
-                <strong>{service.name}</strong>
-                <span>{service.status ?? "offline"} · {service.latencyMs ?? 0}ms</span>
+                <strong>hermes memory</strong>
+                <span>{state.brainMemory.entries} notes · {state.brainMemory.outcomes} outcomes</span>
               </div>
-              <Status value={service.ok ? "online" : "error"} />
+              <Status value={state.brainMemory.ok ? "online" : "error"} />
             </article>
-          ))}
-          <article className="servicePill">
-            <div>
-              <strong>hermes memory</strong>
-              <span>{state.brainMemory.entries} notes · {state.brainMemory.outcomes} outcomes</span>
-            </div>
-            <Status value={state.brainMemory.ok ? "online" : "error"} />
-          </article>
-        </section>
+          </section>
+        )}
 
         {state.alerts.length > 0 && (
           <section className="alertStrip">
@@ -364,6 +432,7 @@ function App() {
         )}
 
         <section className="grid">
+          {activeView === "agents" && (
           <div className="panel agents">
             <div className="panelHead">
               <div>
@@ -399,7 +468,9 @@ function App() {
               ))}
             </div>
           </div>
+          )}
 
+          {activeView === "agents" && (
           <form className="panel taskComposer" onSubmit={createTask}>
             <div className="panelHead">
               <div>
@@ -445,7 +516,9 @@ function App() {
               <p className="formWarning">Budget protection paused this agent.</p>
             )}
           </form>
+          )}
 
+          {activeView === "gateway" && (
           <div className="panel repositories">
             <div className="panelHead">
               <div>
@@ -545,7 +618,9 @@ function App() {
               ))}
             </div>
           </div>
+          )}
 
+          {activeView === "operations" && (
           <div className="panel protection">
             <div className="panelHead">
               <div>
@@ -595,7 +670,9 @@ function App() {
               </button>
             </form>
           </div>
+          )}
 
+          {activeView === "memory" && (
           <div className="panel skills">
             <div className="panelHead">
               <div>
@@ -620,7 +697,9 @@ function App() {
               ))}
             </div>
           </div>
+          )}
 
+          {activeView === "memory" && (
           <div className="panel memory">
             <div className="panelHead">
               <div>
@@ -639,7 +718,9 @@ function App() {
               ))}
             </div>
           </div>
+          )}
 
+          {activeView === "operations" && (
           <div className="panel tasks">
             <div className="panelHead">
               <div>
@@ -692,7 +773,9 @@ function App() {
               ))}
             </div>
           </div>
+          )}
 
+          {(activeView === "operations" || activeView === "memory") && (
           <div className="panel events">
             <div className="panelHead">
               <div>
@@ -709,7 +792,39 @@ function App() {
               ))}
             </ol>
           </div>
+          )}
 
+          {activeView === "gateway" && (
+          <div className="panel combos">
+            <div className="panelHead">
+              <div>
+                <h2>Model combos</h2>
+                <p>9Router routing groups available to Zero-Human agents.</p>
+              </div>
+              <RadioTower size={20} />
+            </div>
+            <div className="comboList">
+              {Object.entries(state.combos).length === 0 && <div className="empty">No model combos configured yet.</div>}
+              {Object.entries(state.combos).map(([comboName, models]) => (
+                <article className="comboRow" key={comboName}>
+                  <div>
+                    <strong>{comboName}</strong>
+                    <span>{models.length} model route{models.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="comboModels">
+                    {models.map((model, index) => (
+                      <code key={`${comboName}-${model.provider}-${model.model}-${index}`}>
+                        {model.provider}/{model.model}
+                      </code>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {activeView === "gateway" && (
           <div className="panel upstreams">
             <div className="panelHead">
               <div>
@@ -733,6 +848,7 @@ function App() {
               ))}
             </div>
           </div>
+          )}
         </section>
       </section>
     </main>
