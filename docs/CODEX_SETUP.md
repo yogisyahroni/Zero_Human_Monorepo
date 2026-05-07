@@ -26,6 +26,17 @@ CODEX_HOME=/root/.codex
 `CODEX_API_KEY` is the internal bearer token sent to 9Router. Real provider
 keys should stay in 9Router.
 
+Paperclip's own Codex local adapter also routes through 9Router in Docker:
+
+```env
+OPENAI_BASE_URL=http://9router:20128/v1
+OPENAI_API_KEY=sk_9router
+CODEX_OPENAI_BASE_URL=http://9router:20128/v1
+```
+
+This keeps Paperclip onboarding checks and direct Paperclip agent runs aligned
+with the same 9Router gateway used by Zero-Human Brain.
+
 ## Container Setup
 
 Start the stack:

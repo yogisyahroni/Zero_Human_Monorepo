@@ -18,6 +18,12 @@ function readExtraArgs(config: unknown): string[] {
   return asStringArray(asRecord(config).args);
 }
 
+function readRouterArgs(): string[] {
+  const baseUrl = process.env.CODEX_OPENAI_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim();
+  if (!baseUrl) return [];
+  return ["-c", `openai_base_url=${JSON.stringify(baseUrl)}`];
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -54,6 +60,7 @@ export function buildCodexExecArgs(
   if (modelReasoningEffort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
   }
+  args.push(...readRouterArgs());
   if (fastModeApplied) {
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
