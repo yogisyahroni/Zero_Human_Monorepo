@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
@@ -12,6 +13,7 @@ import {
   type TaskType,
   ZHEvent
 } from "@zh/sdk";
+import { upstreamSources } from "@zh/sdk";
 
 const config = loadConfig();
 const app = express();
@@ -20,10 +22,44 @@ const tasks = new Map<string, Task>();
 const events: Array<{ event: string; timestamp: string; summary: string }> = [];
 const routerMetrics = { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 };
 const bus = new RedisEventBus(config.infrastructure.redis_url, "hr");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "../../../..");
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
   events.splice(80);
+}
+
+function readJson(filePath: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function readHermesVersion(filePath: string): string | null {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return raw.match(/^version = "([^"]+)"/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function upstreamStatus() {
+  return upstreamSources.map((source) => {
+    const absolutePath = path.join(repoRoot, source.prefix);
+    const packageJson = readJson(path.join(absolutePath, "package.json"));
+    const pyprojectVersion = readHermesVersion(path.join(absolutePath, "pyproject.toml"));
+    return {
+      ...source,
+      present: fs.existsSync(absolutePath),
+      absolutePath,
+      packageName: packageJson?.name ?? null,
+      version: packageJson?.version ?? pyprojectVersion ?? null
+    };
+  });
 }
 
 bus.on("*", (message) => addEvent(message.event, `${message.metadata.source} published ${message.event}`));
@@ -82,6 +118,7 @@ app.get("/api/state", (_req, res) => {
     tasks: Array.from(tasks.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     events,
     routerMetrics,
+    upstreams: upstreamStatus(),
     budget: {
       global: config.company.budget_usd,
       allocated: totalAgentBudget,
@@ -162,7 +199,6 @@ app.post("/api/tasks/:taskId/approve", (req, res) => {
   res.json(task);
 });
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const webDist = path.resolve(__dirname, "../web/dist");
 app.use(express.static(webDist));
 app.get("*", (_req, res) => {

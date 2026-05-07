@@ -10,6 +10,7 @@
     "dev:router": "pnpm --filter @zh/router dev",
     "dev:brain": "pnpm --filter @zh/brain dev",
     "dev:hr": "pnpm --filter @zh/hr dev",
+    "upstream:status": "powershell -ExecutionPolicy Bypass -File scripts/upstream-status.ps1",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"

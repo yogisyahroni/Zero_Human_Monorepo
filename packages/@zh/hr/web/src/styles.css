@@ -217,6 +217,7 @@ textarea {
 .status.reviewing, .status.pending_review { border-color: var(--accent); color: var(--accent); }
 .status.error { border-color: var(--danger); color: var(--danger); }
 .status.done, .status.idle { border-color: #8aa878; color: #c4ef98; }
+.status.present { border-color: var(--accent); color: var(--accent); }
 .events ol {
   margin: 0;
   padding: 0;
@@ -232,6 +233,27 @@ textarea {
   font-size: 13px;
 }
 .events span { color: var(--ink); }
+.upstreamList {
+  display: grid;
+  gap: 10px;
+}
+.upstreamRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 13px;
+}
+.upstreamRow span, .upstreamRow small {
+  display: block;
+  color: var(--muted);
+  margin-top: 5px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .empty {
   min-height: 92px;
   border: 1px dashed #3a403e;

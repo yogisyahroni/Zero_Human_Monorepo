@@ -15,7 +15,7 @@ foreach ($cmd in @("git", "pnpm", "docker")) {
 New-Item -ItemType Directory -Force -Path "packages/@zh", "patches/router", "patches/brain", "patches/hr", "config", "worktrees" | Out-Null
 
 $remotes = @{
-  "upstream-router" = "https://github.com/NousResearch/9Router.git"
+  "upstream-router" = "https://github.com/decolua/9router.git"
   "upstream-brain" = "https://github.com/NousResearch/hermes-agent.git"
   "upstream-hr" = "https://github.com/paperclipai/paperclip.git"
 }

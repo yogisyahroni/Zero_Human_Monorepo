@@ -6,9 +6,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $map = @{
-  router = @{ Prefix = "packages/@zh/router"; Remote = "upstream-router"; Branch = "main" }
-  brain = @{ Prefix = "packages/@zh/brain"; Remote = "upstream-brain"; Branch = "main" }
-  hr = @{ Prefix = "packages/@zh/hr"; Remote = "upstream-hr"; Branch = "main" }
+  router = @{ Prefix = "packages/@zh/router/upstream"; Remote = "upstream-router"; Branch = "master" }
+  brain = @{ Prefix = "packages/@zh/brain/upstream"; Remote = "upstream-brain"; Branch = "main" }
+  hr = @{ Prefix = "packages/@zh/hr/upstream"; Remote = "upstream-hr"; Branch = "master" }
 }
 
 $target = $map[$Package]

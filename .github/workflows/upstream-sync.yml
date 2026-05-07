@@ -12,9 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         upstream:
-          - { name: router, repo: NousResearch/9Router, branch: main }
+          - { name: router, repo: decolua/9router, branch: master }
           - { name: brain, repo: NousResearch/hermes-agent, branch: main }
-          - { name: hr, repo: paperclipai/paperclip, branch: main }
+          - { name: hr, repo: paperclipai/paperclip, branch: master }
 
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
       - name: Pull upstream subtree
         run: |
           git subtree pull \
-            --prefix=packages/@zh/${{ matrix.upstream.name }} \
+            --prefix=packages/@zh/${{ matrix.upstream.name }}/upstream \
             https://github.com/${{ matrix.upstream.repo }}.git \
             ${{ matrix.upstream.branch }} \
             --squash

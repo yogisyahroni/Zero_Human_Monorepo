@@ -2,12 +2,12 @@
 
 Autonomous AI Company Operating System scaffold based on `PRD_Zero_Human_Monorepo1.md`.
 
-This repo currently implements the Phase 1 foundation:
+This repo now contains both the Zero-Human integration wrappers and the original upstream codebases:
 
 - `@zh/sdk`: shared types, YAML config loader, Redis event contracts
-- `@zh/router`: local AI gateway stub with `/health`, `/metrics`, and OpenAI-compatible `/v1/chat/completions`
-- `@zh/brain`: Hermes-style task consumer with persistent-memory shaped API
-- `@zh/hr`: Paperclip-style dashboard, task queue, approval workflow, and budget overview
+- `@zh/router`: Zero-Human router adapter plus original 9Router source in `packages/@zh/router/upstream`
+- `@zh/brain`: Zero-Human brain adapter plus original Hermes Agent source in `packages/@zh/brain/upstream`
+- `@zh/hr`: Zero-Human HR/dashboard adapter plus original Paperclip source in `packages/@zh/hr/upstream`
 - `docker-compose.yml`: Redis, router, brain, and HR dashboard on one network
 
 ## Run Locally
@@ -42,12 +42,28 @@ pnpm dev:hr
 
 ## Upstream Notes
 
-The PRD names three upstream projects. As of the initial scaffold, the dashboard and service contracts are implemented locally so the product can run before subtree imports are added.
+The original repositories are imported as git subtrees under each adapter package. The adapter layer stays in `src/` and the upstream source stays in `upstream/`, which keeps Zero-Human integration code separate from upstream code during syncs.
 
-Current likely upstreams:
+Current upstreams:
 
-- Router: `https://github.com/NousResearch/9Router.git`
+- Router: `https://github.com/decolua/9router.git`
 - Brain: `https://github.com/NousResearch/hermes-agent.git`
 - HR: `https://github.com/paperclipai/paperclip.git`
 
-Use `scripts/setup.ps1` to add remotes, then add subtree imports when ready. Keep custom integration in `@zh/sdk` and patch folders so upstream syncs remain reviewable.
+The PRD referenced `NousResearch/9Router`, but that repository was not available when verified. The matching public upstream is `decolua/9router`.
+
+Check subtree presence:
+
+```powershell
+pnpm upstream:status
+```
+
+Sync one upstream:
+
+```powershell
+.\scripts\sync-upstream.ps1 router
+.\scripts\sync-upstream.ps1 brain
+.\scripts\sync-upstream.ps1 hr
+```
+
+Keep custom integration in `@zh/sdk`, package adapter `src/`, and patch folders so upstream syncs remain reviewable.

@@ -50,6 +50,17 @@ type State = {
   tasks: Task[];
   events: Array<{ event: string; timestamp: string; summary: string }>;
   routerMetrics: { requests: number; costUsd: number; inputTokens: number; outputTokens: number };
+  upstreams: Array<{
+    name: string;
+    displayName: string;
+    repository: string;
+    branch: string;
+    prefix: string;
+    role: string;
+    present: boolean;
+    packageName: string | null;
+    version: string | null;
+  }>;
   budget: { global: number; allocated: number; spent: number; currency: string };
   combos: Record<string, Array<{ provider: string; model: string }>>;
 };
@@ -62,6 +73,7 @@ const fallbackState: State = {
   tasks: [],
   events: [],
   routerMetrics: { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },
+  upstreams: [],
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
 };
@@ -262,6 +274,28 @@ function App() {
                 </li>
               ))}
             </ol>
+          </div>
+
+          <div className="panel upstreams">
+            <div className="panelHead">
+              <div>
+                <h2>Upstream code</h2>
+                <p>Original repositories mounted as git subtrees.</p>
+              </div>
+              <GitBranch size={20} />
+            </div>
+            <div className="upstreamList">
+              {state.upstreams.map((upstream) => (
+                <article className="upstreamRow" key={upstream.name}>
+                  <div>
+                    <strong>{upstream.displayName}</strong>
+                    <span>{upstream.packageName ?? upstream.name} {upstream.version ? `· v${upstream.version}` : ""}</span>
+                    <small>{upstream.prefix}</small>
+                  </div>
+                  <Status value={upstream.present ? "present" : "error"} />
+                </article>
+              ))}
+            </div>
           </div>
         </section>
       </section>

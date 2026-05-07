@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { loadConfig, RedisEventBus, ZHEvent } from "@zh/sdk";
+import { loadConfig, RedisEventBus, upstreamSources, ZHEvent } from "@zh/sdk";
 
 const config = loadConfig();
 const app = express();
@@ -29,6 +29,7 @@ app.get("/health", (_req, res) => {
     ok: true,
     service: "@zh/router",
     redis: bus.connected,
+    upstream: upstreamSources.find((source) => source.name === "router"),
     rtkTokenSaver: config.gateway.rtk_token_saver,
     cavemanMode: config.gateway.caveman_mode
   });

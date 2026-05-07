@@ -1,6 +1,6 @@
 import cors from "cors";
 import express from "express";
-import { agentsFromConfig, loadConfig, RedisEventBus, Task, ZHEvent } from "@zh/sdk";
+import { agentsFromConfig, loadConfig, RedisEventBus, Task, upstreamSources, ZHEvent } from "@zh/sdk";
 
 const config = loadConfig();
 const app = express();
@@ -62,7 +62,13 @@ bus.connect().then(() => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "@zh/brain", redis: bus.connected, agents: agents.size });
+  res.json({
+    ok: true,
+    service: "@zh/brain",
+    redis: bus.connected,
+    agents: agents.size,
+    upstream: upstreamSources.find((source) => source.name === "brain")
+  });
 });
 
 app.get("/api/memory", (_req, res) => {
