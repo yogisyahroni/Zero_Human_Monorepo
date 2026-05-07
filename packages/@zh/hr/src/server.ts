@@ -21,6 +21,8 @@ const agents = new Map<string, Agent>(agentsFromConfig(config).map((agent) => [a
 const tasks = new Map<string, Task>();
 const events: Array<{ event: string; timestamp: string; summary: string }> = [];
 const routerMetrics = { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+const skillProgress = new Map<string, { agentId: string; skill: string; runs: number; confidence: number; lastTaskId?: string; updatedAt: string }>();
+const budgetFlags = { thresholdPublished: false, globalPaused: false };
 const bus = new RedisEventBus(config.infrastructure.redis_url, "hr");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
@@ -37,6 +39,37 @@ type ServiceHealth = {
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
   events.splice(80);
+}
+
+function currentSpend(): number {
+  const agentSpent = Array.from(agents.values()).reduce((sum, agent) => sum + agent.costAccumulatedUsd, 0);
+  return Math.max(agentSpent, routerMetrics.costUsd);
+}
+
+async function enforceBudget(reason: string): Promise<void> {
+  const globalSpent = currentSpend();
+  if (globalSpent >= config.company.budget_usd && !budgetFlags.globalPaused) {
+    budgetFlags.globalPaused = true;
+    for (const agent of agents.values()) agent.status = "paused";
+    addEvent(ZHEvent.QUOTA_EXHAUSTED, `Global budget exhausted: $${globalSpent.toFixed(4)} / $${config.company.budget_usd}`);
+    if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, { scope: "global", spent: globalSpent, limit: config.company.budget_usd, reason });
+    return;
+  }
+
+  const threshold = config.orchestrator.approval_threshold_usd;
+  if (threshold > 0 && globalSpent >= threshold && !budgetFlags.thresholdPublished) {
+    budgetFlags.thresholdPublished = true;
+    addEvent(ZHEvent.COST_THRESHOLD, `Approval threshold crossed: $${globalSpent.toFixed(4)} / $${threshold}`);
+    if (bus.connected) await bus.publish(ZHEvent.COST_THRESHOLD, { scope: "global", spent: globalSpent, limit: threshold, reason });
+  }
+
+  for (const agent of agents.values()) {
+    if (agent.costAccumulatedUsd >= agent.maxBudgetUsd && agent.status !== "paused") {
+      agent.status = "paused";
+      addEvent(ZHEvent.QUOTA_EXHAUSTED, `${agent.id} paused at $${agent.costAccumulatedUsd.toFixed(4)} / $${agent.maxBudgetUsd}`);
+      if (bus.connected) await bus.publish(ZHEvent.QUOTA_EXHAUSTED, { scope: "agent", agentId: agent.id, spent: agent.costAccumulatedUsd, limit: agent.maxBudgetUsd, reason });
+    }
+  }
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -144,23 +177,49 @@ bus.on<Task>(ZHEvent.TASK_STARTED, (message) => {
   if (agent) agent.status = "working";
 });
 bus.on<Task>(ZHEvent.TASK_COMPLETED, (message) => {
-  const task = message.payload;
+  const previous = tasks.get(message.payload.id);
+  const reportedCost = Math.max(message.payload.costAccumulated ?? 0, previous?.costAccumulated ?? 0);
+  const task = { ...message.payload, costAccumulated: reportedCost };
   tasks.set(task.id, task);
   const agent = agents.get(task.agentId);
   if (agent) {
-    agent.status = "reviewing";
-    agent.costAccumulatedUsd += task.costAccumulated ?? 0;
+    if (agent.status !== "paused") agent.status = "reviewing";
+    agent.costAccumulatedUsd += Math.max(0, reportedCost - (previous?.costAccumulated ?? 0));
   }
 });
-bus.on<{ costUsd: number; inputTokens: number; outputTokens: number }>(ZHEvent.COST_ACCUMULATED, (message) => {
+bus.on<{ costUsd: number; inputTokens: number; outputTokens: number; agentId?: string; taskId?: string }>(ZHEvent.COST_ACCUMULATED, async (message) => {
   routerMetrics.requests += 1;
   routerMetrics.costUsd += message.payload.costUsd;
   routerMetrics.inputTokens += message.payload.inputTokens;
   routerMetrics.outputTokens += message.payload.outputTokens;
+  if (message.payload.agentId) {
+    const agent = agents.get(message.payload.agentId);
+    if (agent) agent.costAccumulatedUsd += message.payload.costUsd;
+  }
+  if (message.payload.taskId) {
+    const task = tasks.get(message.payload.taskId);
+    if (task) task.costAccumulated = Number(((task.costAccumulated ?? 0) + message.payload.costUsd).toFixed(6));
+  }
+  await enforceBudget("router-cost-event");
 });
 bus.on<{ agentId: string }>(ZHEvent.AGENT_READY, (message) => {
   const agent = agents.get(message.payload.agentId);
-  if (agent) agent.status = "idle";
+  if (agent && agent.status !== "paused") agent.status = "idle";
+});
+bus.on<{ agentId: string; skill: string; taskId?: string; confidence?: number }>(ZHEvent.SKILL_LEARNED, (message) => {
+  const key = `${message.payload.agentId}:${message.payload.skill}`;
+  const existing = skillProgress.get(key);
+  const runs = (existing?.runs ?? 0) + 1;
+  const confidence = Number((((existing?.confidence ?? 0.55) + (message.payload.confidence ?? 0.65)) / 2).toFixed(2));
+  skillProgress.set(key, {
+    agentId: message.payload.agentId,
+    skill: message.payload.skill,
+    runs,
+    confidence,
+    lastTaskId: message.payload.taskId,
+    updatedAt: new Date().toISOString()
+  });
+  addEvent(ZHEvent.SKILL_LEARNED, `${message.payload.agentId} improved ${message.payload.skill}`);
 });
 
 bus.connect().then(() => {
@@ -178,7 +237,7 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/state", async (_req, res) => {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
-  const spent = Array.from(agents.values()).reduce((sum, agent) => sum + agent.costAccumulatedUsd, 0) + routerMetrics.costUsd;
+  const spent = currentSpend();
   const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
   res.json({
     company: config.company,
@@ -194,6 +253,7 @@ app.get("/api/state", async (_req, res) => {
     routerMetrics,
     serviceHealth: health,
     brainMemory: memory,
+    skillProgress: Array.from(skillProgress.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     upstreams: upstreamStatus(),
     budget: {
       global: config.company.budget_usd,
@@ -224,6 +284,9 @@ app.post("/api/tasks", async (req, res) => {
   };
   if (!agentId || !agents.has(agentId)) return res.status(400).json({ error: "Valid agentId is required" });
   if (!description?.trim()) return res.status(400).json({ error: "description is required" });
+  const selectedAgent = agents.get(agentId);
+  if (selectedAgent?.status === "paused") return res.status(423).json({ error: `${agentId} is paused by budget protection` });
+  if (currentSpend() >= config.company.budget_usd) return res.status(423).json({ error: "Global budget is exhausted" });
 
   const now = new Date().toISOString();
   const task: Task = {

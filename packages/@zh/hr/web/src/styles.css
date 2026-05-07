@@ -223,6 +223,73 @@ textarea {
   border-color: var(--accent);
   font-weight: 800;
 }
+.formWarning {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 10px 0 0;
+}
+.protectionStats {
+  display: grid;
+  gap: 9px;
+}
+.protectionStats span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 9px;
+}
+.protectionStats strong {
+  color: var(--ink);
+}
+.budgetGauge {
+  height: 12px;
+  background: #111515;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.budgetGauge div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent), var(--danger));
+}
+.skillMatrix {
+  display: grid;
+  gap: 10px;
+}
+.skillCard {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 11px;
+}
+.skillCard span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.confidence {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.confidence div {
+  height: 8px;
+  background: #111515;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.confidence i {
+  display: block;
+  height: 100%;
+  background: var(--accent-2);
+}
 .tasks { grid-column: span 2; }
 .taskRow {
   display: grid;

@@ -6,6 +6,7 @@ import {
   Brain,
   Check,
   CircuitBoard,
+  Gauge,
   GitBranch,
   Play,
   Plus,
@@ -50,6 +51,14 @@ type State = {
   tasks: Task[];
   events: Array<{ event: string; timestamp: string; summary: string }>;
   routerMetrics: { requests: number; costUsd: number; inputTokens: number; outputTokens: number };
+  skillProgress: Array<{
+    agentId: string;
+    skill: string;
+    runs: number;
+    confidence: number;
+    lastTaskId?: string;
+    updatedAt: string;
+  }>;
   serviceHealth: Array<{
     name: string;
     url: string;
@@ -85,6 +94,7 @@ const fallbackState: State = {
   tasks: [],
   events: [],
   routerMetrics: { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },
+  skillProgress: [],
   serviceHealth: [],
   brainMemory: { ok: false, agentCount: 0, entries: 0 },
   upstreams: [],
@@ -119,6 +129,9 @@ function App() {
     () => state.tasks.filter((task) => task.status !== "done").length,
     [state.tasks]
   );
+  const selectedAgentProfile = state.agents.find((agent) => agent.id === selectedAgent);
+  const budgetRemaining = Math.max(0, state.budget.global - state.budget.spent);
+  const pausedAgents = state.agents.filter((agent) => agent.status === "paused").length;
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -259,10 +272,56 @@ function App() {
               Description
               <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
             </label>
-            <button className="primary" disabled={busy || !description.trim()}>
+            <button className="primary" disabled={busy || !description.trim() || selectedAgentProfile?.status === "paused"}>
               <Play size={17} /> Dispatch task
             </button>
+            {selectedAgentProfile?.status === "paused" && (
+              <p className="formWarning">Budget protection paused this agent.</p>
+            )}
           </form>
+
+          <div className="panel protection">
+            <div className="panelHead">
+              <div>
+                <h2>Budget protection</h2>
+                <p>Auto-pause uses cost events from Router.</p>
+              </div>
+              <Gauge size={20} />
+            </div>
+            <div className="budgetGauge">
+              <div style={{ width: `${Math.min(100, (state.budget.spent / Math.max(1, state.budget.global)) * 100)}%` }} />
+            </div>
+            <div className="protectionStats">
+              <span>Remaining <strong>{money(budgetRemaining)}</strong></span>
+              <span>Approval gate <strong>{money(state.policies.approval_threshold_usd)}</strong></span>
+              <span>Paused agents <strong>{pausedAgents}</strong></span>
+            </div>
+          </div>
+
+          <div className="panel skills">
+            <div className="panelHead">
+              <div>
+                <h2>Skill evolution</h2>
+                <p>Brain publishes `zh:skill:learned` after handled tasks.</p>
+              </div>
+              <Brain size={20} />
+            </div>
+            <div className="skillMatrix">
+              {state.skillProgress.length === 0 && <div className="empty">No skill events yet. Dispatch a task to start memory growth.</div>}
+              {state.skillProgress.slice(0, 6).map((skill) => (
+                <article className="skillCard" key={`${skill.agentId}-${skill.skill}`}>
+                  <div>
+                    <strong>{skill.skill}</strong>
+                    <span>{skill.agentId} · {skill.runs} runs</span>
+                  </div>
+                  <div className="confidence">
+                    <span>{Math.round(skill.confidence * 100)}%</span>
+                    <div><i style={{ width: `${Math.round(skill.confidence * 100)}%` }} /></div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
 
           <div className="panel tasks">
             <div className="panelHead">

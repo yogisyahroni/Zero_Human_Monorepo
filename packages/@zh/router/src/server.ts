@@ -33,7 +33,14 @@ function estimateCost(inputTokens: number, outputTokens: number): number {
   return Number(((inputTokens + outputTokens) * 0.0000006).toFixed(6));
 }
 
-async function publishCost(comboName: string, provider: string, inputTokens: number, outputTokens: number, costUsd: number): Promise<void> {
+async function publishCost(
+  comboName: string,
+  provider: string,
+  inputTokens: number,
+  outputTokens: number,
+  costUsd: number,
+  context: { agentId?: string; taskId?: string } = {}
+): Promise<void> {
   usage.requests += 1;
   usage.inputTokens += inputTokens;
   usage.outputTokens += outputTokens;
@@ -45,7 +52,8 @@ async function publishCost(comboName: string, provider: string, inputTokens: num
       provider,
       inputTokens,
       outputTokens,
-      costUsd
+      costUsd,
+      ...context
     });
   }
 }
@@ -103,6 +111,10 @@ app.post("/v1/chat/completions", async (req, res) => {
   const inputTokens = estimateTokens(req.body.messages ?? req.body);
   const provider = combo?.[0]?.provider ?? "mock";
   const upstreamUrl = upstreamBaseUrl();
+  const eventContext = {
+    agentId: req.header("x-zh-agent-id") ?? undefined,
+    taskId: req.header("x-zh-task-id") ?? undefined
+  };
 
   if (upstreamUrl) {
     try {
@@ -127,14 +139,14 @@ app.post("/v1/chat/completions", async (req, res) => {
           throw new Error(`9Router returned HTTP ${upstreamResponse.status}`);
         }
         const tracked = usageFromResponse(parsed, inputTokens);
-        await publishCost(comboName, provider, tracked.inputTokens, tracked.outputTokens, estimateCost(tracked.inputTokens, tracked.outputTokens));
+        await publishCost(comboName, provider, tracked.inputTokens, tracked.outputTokens, estimateCost(tracked.inputTokens, tracked.outputTokens), eventContext);
         return res.status(upstreamResponse.status).type(contentType).send(JSON.stringify(parsed));
       }
       if (!upstreamResponse.ok) {
         throw new Error(`9Router returned HTTP ${upstreamResponse.status}`);
       }
       const outputTokens = estimateTokens(raw);
-      await publishCost(comboName, provider, inputTokens, outputTokens, estimateCost(inputTokens, outputTokens));
+      await publishCost(comboName, provider, inputTokens, outputTokens, estimateCost(inputTokens, outputTokens), eventContext);
       return res.status(upstreamResponse.status).type(contentType).send(raw);
     } catch (error) {
       usage.upstreamFailures += 1;
@@ -145,7 +157,7 @@ app.post("/v1/chat/completions", async (req, res) => {
   const outputTokens = config.gateway.caveman_mode ? 96 : 180;
   const costUsd = estimateCost(inputTokens, outputTokens);
   usage.fallbackCount += 1;
-  await publishCost(comboName, provider, inputTokens, outputTokens, costUsd);
+  await publishCost(comboName, provider, inputTokens, outputTokens, costUsd, eventContext);
 
   res.json({
     id: `zhcmpl_${Date.now()}`,

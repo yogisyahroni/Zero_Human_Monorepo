@@ -41,7 +41,9 @@ async function askRouter(task: Task, agentRole: string): Promise<string> {
       headers: {
         "content-type": "application/json",
         "authorization": "Bearer sk_9router",
-        "x-zh-combo": agents.get(task.agentId)?.modelCombo ?? "cheap_stack"
+        "x-zh-combo": agents.get(task.agentId)?.modelCombo ?? "cheap_stack",
+        "x-zh-agent-id": task.agentId,
+        "x-zh-task-id": task.id
       },
       body: JSON.stringify({
         model: agents.get(task.agentId)?.modelCombo ?? "zero-human-auto",
@@ -96,6 +98,12 @@ async function handleTask(task: Task): Promise<void> {
   activeTasks.set(task.id, completed);
   agent.status = "reviewing";
   remember(agent.id, `Handled ${task.type} task ${task.id}: ${task.description}`);
+  await bus.publish(ZHEvent.SKILL_LEARNED, {
+    agentId: agent.id,
+    skill: task.type,
+    taskId: task.id,
+    confidence: 0.72
+  });
   await bus.publish(ZHEvent.TASK_COMPLETED, completed);
 }
 
