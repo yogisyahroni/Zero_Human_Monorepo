@@ -18,7 +18,7 @@ pnpm build
 pnpm dev:hr
 ```
 
-For the full event-driven stack:
+For the full microservices stack:
 
 ```powershell
 docker compose up --build
@@ -26,9 +26,14 @@ docker compose up --build
 
 Open:
 
-- HR dashboard: <http://localhost:3000>
-- Router health: <http://localhost:20128/health>
-- Router metrics: <http://localhost:20128/metrics>
+- Zero-Human control plane: <http://localhost:3003>
+- 9Router upstream: <http://localhost:20128>
+- Hermes upstream dashboard: <http://localhost:9119>
+- Paperclip upstream: <http://localhost:3100>
+
+The three upstream projects run as independent Docker services. Zero-Human
+adapter services run alongside them and communicate through Redis plus the
+configured service URLs.
 
 ## Development Services
 
@@ -38,7 +43,7 @@ pnpm dev:brain
 pnpm dev:hr
 ```
 
-`pnpm dev:hr` starts the API at port `3000` and Vite at port `3001`.
+`pnpm dev:hr` starts the API at port `3003` and Vite at port `3001`.
 
 ## Upstream Notes
 

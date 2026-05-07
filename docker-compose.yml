@@ -2,69 +2,174 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
     volumes:
       - redis-data:/data
     networks:
       - zh-network
 
-  router:
+  9router:
     build:
-      context: .
-      args:
-        SERVICE: router
+      context: ./packages/@zh/router/upstream
+      dockerfile: Dockerfile
     environment:
-      ZH_CONFIG_PATH: /app/config/zero-human.yaml
-      REDIS_URL: redis://redis:6379
+      PORT: "20128"
+      HOSTNAME: "0.0.0.0"
+      DATA_DIR: /app/data
+      BASE_URL: http://localhost:20128
+      NEXT_PUBLIC_BASE_URL: http://localhost:20128
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       GLM_API_KEY: ${GLM_API_KEY:-}
     ports:
       - "20128:20128"
-    depends_on:
-      - redis
+    volumes:
+      - router-data:/app/data
     networks:
       - zh-network
 
-  brain:
+  hermes:
+    build:
+      context: ./packages/@zh/brain/upstream
+      dockerfile: Dockerfile
+    command: ["dashboard", "--host", "0.0.0.0", "--no-open"]
+    environment:
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_HOME: /opt/data
+      OPENAI_BASE_URL: http://9router:20128/v1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk_9router}
+    ports:
+      - "9119:9119"
+    volumes:
+      - brain-memory:/opt/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - 9router
+    networks:
+      - zh-network
+
+  paperclip-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - paperclip-pgdata:/var/lib/postgresql/data
+    networks:
+      - zh-network
+
+  paperclip:
+    build:
+      context: ./packages/@zh/hr/upstream
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://paperclip:paperclip@paperclip-db:5432/paperclip
+      HOST: 0.0.0.0
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_PUBLIC_URL: http://localhost:3100
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_INSTANCE_ID: default
+      PAPERCLIP_CONFIG: /paperclip/instances/default/config.json
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-zero-human-dev-secret-change-me}
+      ZH_ROUTER_URL: http://9router:20128
+      ZH_BRAIN_URL: http://hermes:9119
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3100:3100"
+    volumes:
+      - paperclip-data:/paperclip
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      paperclip-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      9router:
+        condition: service_started
+      hermes:
+        condition: service_started
+    networks:
+      - zh-network
+
+  zh-router-adapter:
+    build:
+      context: .
+      args:
+        SERVICE: router
+    environment:
+      PORT: "20129"
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+      ZH_ROUTER_URL: http://9router:20128
+    depends_on:
+      - redis
+      - 9router
+    networks:
+      - zh-network
+
+  zh-brain-adapter:
     build:
       context: .
       args:
         SERVICE: brain
     environment:
+      PORT: "8080"
       ZH_CONFIG_PATH: /app/config/zero-human.yaml
       REDIS_URL: redis://redis:6379
+      ZH_ROUTER_URL: http://9router:20128
+      ZH_BRAIN_URL: http://hermes:9119
     volumes:
       - brain-memory:/root/.hermes
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
-      - router
+      - 9router
+      - hermes
     networks:
       - zh-network
 
-  hr:
+  zero-human:
     build:
       context: .
       args:
         SERVICE: hr
     environment:
+      PORT: "3003"
       ZH_CONFIG_PATH: /app/config/zero-human.yaml
       REDIS_URL: redis://redis:6379
+      ZH_ROUTER_URL: http://9router:20128
+      ZH_BRAIN_URL: http://hermes:9119
+      ZH_HR_URL: http://paperclip:3100
     ports:
-      - "3000:3000"
+      - "3003:3003"
     volumes:
       - hr-worktrees:/app/worktrees
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
-      - brain
-      - router
+      - zh-brain-adapter
+      - zh-router-adapter
+      - paperclip
     networks:
       - zh-network
 
 volumes:
   redis-data:
+  router-data:
   brain-memory:
+  paperclip-pgdata:
+  paperclip-data:
   hr-worktrees:
 
 networks:

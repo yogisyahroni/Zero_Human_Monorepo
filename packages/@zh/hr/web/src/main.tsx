@@ -56,6 +56,9 @@ type State = {
     repository: string;
     branch: string;
     prefix: string;
+    defaultUrl: string;
+    configuredUrl: string;
+    containerPort: number;
     role: string;
     present: boolean;
     packageName: string | null;
@@ -291,6 +294,7 @@ function App() {
                     <strong>{upstream.displayName}</strong>
                     <span>{upstream.packageName ?? upstream.name} {upstream.version ? `· v${upstream.version}` : ""}</span>
                     <small>{upstream.prefix}</small>
+                    <a href={upstream.defaultUrl} target="_blank" rel="noreferrer">{upstream.defaultUrl}</a>
                   </div>
                   <Status value={upstream.present ? "present" : "error"} />
                 </article>

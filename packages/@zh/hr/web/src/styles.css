@@ -247,12 +247,16 @@ textarea {
   border-radius: 8px;
   padding: 13px;
 }
-.upstreamRow span, .upstreamRow small {
+.upstreamRow span, .upstreamRow small, .upstreamRow a {
   display: block;
   color: var(--muted);
   margin-top: 5px;
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+.upstreamRow a {
+  color: var(--accent-2);
+  text-decoration: none;
 }
 .empty {
   min-height: 92px;

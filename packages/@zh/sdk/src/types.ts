@@ -79,6 +79,11 @@ export interface ZeroHumanConfig {
     redis_url: string;
     docker_socket: string;
     worktree_base: string;
+    services?: {
+      router_url: string;
+      brain_url: string;
+      hr_url: string;
+    };
   };
   gateway: {
     port: number;

@@ -52,10 +52,16 @@ function upstreamStatus() {
     const absolutePath = path.join(repoRoot, source.prefix);
     const packageJson = readJson(path.join(absolutePath, "package.json"));
     const pyprojectVersion = readHermesVersion(path.join(absolutePath, "pyproject.toml"));
+    const configuredUrl =
+      source.name === "router" ? config.infrastructure.services?.router_url :
+      source.name === "brain" ? config.infrastructure.services?.brain_url :
+      source.name === "hr" ? config.infrastructure.services?.hr_url :
+      source.defaultUrl;
     return {
       ...source,
       present: fs.existsSync(absolutePath),
       absolutePath,
+      configuredUrl,
       packageName: packageJson?.name ?? null,
       version: packageJson?.version ?? pyprojectVersion ?? null
     };
@@ -111,7 +117,8 @@ app.get("/api/state", (_req, res) => {
     company: config.company,
     infrastructure: {
       redisUrl: config.infrastructure.redis_url,
-      worktreeBase: config.infrastructure.worktree_base
+      worktreeBase: config.infrastructure.worktree_base,
+      services: config.infrastructure.services
     },
     policies: config.orchestrator,
     agents: Array.from(agents.values()),

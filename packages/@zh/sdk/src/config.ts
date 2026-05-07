@@ -15,7 +15,12 @@ const configSchema = z.object({
   infrastructure: z.object({
     redis_url: z.string(),
     docker_socket: z.string(),
-    worktree_base: z.string()
+    worktree_base: z.string(),
+    services: z.object({
+      router_url: z.string(),
+      brain_url: z.string(),
+      hr_url: z.string()
+    }).optional()
   }),
   gateway: z.object({
     port: z.number(),
