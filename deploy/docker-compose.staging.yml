@@ -1,0 +1,237 @@
+name: zero-human-staging
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      CONTAINERS: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      POST: "1"
+      VERSION: "1"
+      VOLUMES: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - zh-network
+
+  9router:
+    build:
+      context: ../packages/@zh/router/upstream
+      dockerfile: Dockerfile
+    environment:
+      PORT: "20128"
+      HOSTNAME: "0.0.0.0"
+      DATA_DIR: /app/data
+      BASE_URL: ${ZH_9ROUTER_PUBLIC_URL:-http://localhost:20128}
+      NEXT_PUBLIC_BASE_URL: ${ZH_9ROUTER_PUBLIC_URL:-http://localhost:20128}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+    ports:
+      - "${ZH_9ROUTER_PORT:-20128}:20128"
+    volumes:
+      - router-data:/app/data
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:20128/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  hermes:
+    build:
+      context: ../packages/@zh/brain/upstream
+      dockerfile: Dockerfile
+    command: ["dashboard", "--host", "0.0.0.0", "--no-open", "--insecure"]
+    environment:
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_HOME: /opt/data
+      OPENAI_BASE_URL: http://9router:20128/v1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk_9router}
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    ports:
+      - "${HERMES_PORT:-9119}:9119"
+    volumes:
+      - brain-memory:/opt/data
+    depends_on:
+      - 9router
+      - docker-socket-proxy
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9119 >/dev/null"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+
+  paperclip-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: ${PAPERCLIP_DB_PASSWORD:-paperclip}
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - paperclip-pgdata:/var/lib/postgresql/data
+    networks:
+      - zh-network
+
+  paperclip:
+    build:
+      context: ../packages/@zh/hr/upstream
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://paperclip:${PAPERCLIP_DB_PASSWORD:-paperclip}@paperclip-db:5432/paperclip
+      HOST: 0.0.0.0
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}
+      PAPERCLIP_ALLOWED_HOSTNAMES: ${PAPERCLIP_ALLOWED_HOSTNAMES:-paperclip}
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_INSTANCE_ID: default
+      PAPERCLIP_CONFIG: /paperclip/instances/default/config.json
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-zero-human-dev-secret-change-me}
+      ZH_ROUTER_URL: http://9router:20128
+      ZH_BRAIN_URL: http://hermes:9119
+      REDIS_URL: redis://redis:6379
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    ports:
+      - "${PAPERCLIP_PORT:-3100}:3100"
+    volumes:
+      - paperclip-data:/paperclip
+    depends_on:
+      paperclip-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      9router:
+        condition: service_started
+      hermes:
+        condition: service_started
+      docker-socket-proxy:
+        condition: service_started
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  zh-router-adapter:
+    image: ${ZH_IMAGE_PREFIX}/zh-router:${ZH_IMAGE_TAG:-latest}
+    environment:
+      PORT: "20129"
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+      ZH_ROUTER_URL: http://9router:20128
+    depends_on:
+      - redis
+      - 9router
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:20129/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  zh-brain-adapter:
+    image: ${ZH_IMAGE_PREFIX}/zh-brain:${ZH_IMAGE_TAG:-latest}
+    environment:
+      PORT: "8080"
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+      ZH_ROUTER_URL: http://zh-router-adapter:20129
+      ZH_BRAIN_URL: http://hermes:9119
+      ZH_WORKTREE_BASE: /app/worktrees
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    volumes:
+      - brain-memory:/root/.hermes
+      - hr-worktrees:/app/worktrees
+      - worktree-source:/app/worktree-source
+    depends_on:
+      - redis
+      - 9router
+      - hermes
+      - zh-router-adapter
+      - docker-socket-proxy
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  zero-human:
+    image: ${ZH_IMAGE_PREFIX}/zh-hr:${ZH_IMAGE_TAG:-latest}
+    environment:
+      PORT: "3003"
+      ZH_CONFIG_PATH: /app/config/zero-human.yaml
+      REDIS_URL: redis://redis:6379
+      ZH_ROUTER_URL: http://zh-router-adapter:20129
+      ZH_BRAIN_URL: http://zh-brain-adapter:8080
+      ZH_HR_URL: http://paperclip:3100
+      ZH_REPO_PATH: /repo
+      ZH_WORKTREE_SOURCE_PATH: /app/worktree-source
+      ZH_WORKTREE_BASE: /app/worktrees
+      ZH_STATE_PATH: /repo/.zero-human/state
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    ports:
+      - "${ZERO_HUMAN_PORT:-3003}:3003"
+    volumes:
+      - hr-worktrees:/app/worktrees
+      - worktree-source:/app/worktree-source
+      - repo-state:/repo
+    depends_on:
+      - redis
+      - zh-brain-adapter
+      - zh-router-adapter
+      - paperclip
+      - docker-socket-proxy
+    networks:
+      - zh-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3003/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  redis-data:
+  router-data:
+  brain-memory:
+  paperclip-pgdata:
+  paperclip-data:
+  hr-worktrees:
+  worktree-source:
+  repo-state:
+
+networks:
+  zh-network:
+    driver: bridge

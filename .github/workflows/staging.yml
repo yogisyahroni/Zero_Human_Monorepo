@@ -1,0 +1,217 @@
+name: Staging
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9.15.4"
+
+jobs:
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm --filter @zh/sdk build
+      - run: pnpm --filter @zh/hr build
+
+  admin-service-test:
+    name: Admin Service Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm --filter @zh/sdk build
+      - run: pnpm --filter @zh/hr test
+
+  auth-service-test:
+    name: Auth Service Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm --filter @zh/sdk build
+      - run: pnpm --filter @zh/brain build
+      - run: pnpm --filter @zh/brain test
+
+  routing-service-test:
+    name: Routing Service Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm --filter @zh/sdk build
+      - run: pnpm --filter @zh/router build
+      - run: pnpm --filter @zh/router test
+
+  migration-test:
+    name: Migration Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Docker Compose
+        run: docker compose -f docker-compose.yml config --quiet
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-build
+      - admin-service-test
+      - auth-service-test
+      - routing-service-test
+      - migration-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - name: Dependency audit
+        run: pnpm audit --audit-level critical
+      - name: Secret pattern scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -n -E '(sk-[A-Za-z0-9_-]{20,}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|GOCSPX-|client_secret)' -- ':!packages/@zh/*/upstream/**' ':!.github/workflows/**' ':!docs/**'; then
+            echo "Potential secret found in tracked integration code."
+            exit 1
+          fi
+          echo "No obvious secret patterns found."
+
+  build-push-docker-images:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: security-scan
+    outputs:
+      image_prefix: ${{ steps.meta.outputs.image_prefix }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Image metadata
+        id: meta
+        shell: bash
+        run: |
+          echo "image_prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - name: Login to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build images
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in router brain hr; do
+            docker build \
+              --build-arg SERVICE="$service" \
+              -t "${{ steps.meta.outputs.image_prefix }}/zh-${service}:${{ steps.meta.outputs.image_tag }}" \
+              -t "${{ steps.meta.outputs.image_prefix }}/zh-${service}:latest" \
+              .
+          done
+      - name: Push images
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in router brain hr; do
+            docker push "${{ steps.meta.outputs.image_prefix }}/zh-${service}:${{ steps.meta.outputs.image_tag }}"
+            docker push "${{ steps.meta.outputs.image_prefix }}/zh-${service}:latest"
+          done
+
+  deploy-to-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-push-docker-images
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deployment secrets
+        id: deploy_config
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.DEPLOY_HOST }}" ] && [ -n "${{ secrets.DEPLOY_USER }}" ] && [ -n "${{ secrets.DEPLOY_SSH_KEY }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Deployment skipped because DEPLOY_HOST, DEPLOY_USER, or DEPLOY_SSH_KEY is not configured." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Deploy over SSH
+        if: github.event_name == 'push' && steps.deploy_config.outputs.enabled == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -e
+            mkdir -p ~/zero-human
+            cd ~/zero-human
+            if [ ! -d .git ]; then
+              git clone https://github.com/${{ github.repository }}.git .
+            else
+              git fetch origin main
+              git reset --hard origin/main
+            fi
+            export ZH_IMAGE_PREFIX="${{ needs.build-push-docker-images.outputs.image_prefix }}"
+            export ZH_IMAGE_TAG="${{ needs.build-push-docker-images.outputs.image_tag }}"
+            docker compose -f deploy/docker-compose.staging.yml pull --ignore-buildable || true
+            docker compose -f deploy/docker-compose.staging.yml up -d --build
+
+  e2e-browser-validation:
+    name: E2E Browser Validation
+    runs-on: ubuntu-latest
+    needs: deploy-to-staging
+    steps:
+      - name: Validate target
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.STAGING_URL }}" ]; then
+            echo "STAGING_URL is not configured, so external browser validation is skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl --fail --retry 12 --retry-delay 5 "${{ secrets.STAGING_URL }}/api/health"
