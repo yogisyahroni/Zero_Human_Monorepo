@@ -18,6 +18,25 @@ function Get-LocalRouterVersion {
   return [string]$packageJson.version
 }
 
+function Remove-TrackedOAuthDefaults {
+  $files = @(
+    "packages/@zh/router/upstream/open-sse/config/providers.js",
+    "packages/@zh/router/upstream/src/lib/oauth/constants/oauth.js",
+    "packages/@zh/router/upstream/open-sse/services/usage.js"
+  )
+
+  foreach ($file in $files) {
+    if (-not (Test-Path $file)) {
+      continue
+    }
+
+    $content = Get-Content $file -Raw
+    $content = $content -replace 'clientId:\s*"[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com"', 'clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || ""'
+    $content = $content -replace 'clientSecret:\s*"GOCSPX-[^"]+"', 'clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || ""'
+    Set-Content -Path $file -Value $content -NoNewline
+  }
+}
+
 $stableVersions = Get-StableVersions
 if ($stableVersions.Count -eq 0) {
   throw "No stable 9Router versions found on npm."
@@ -45,6 +64,7 @@ if ($dirty) {
 }
 
 powershell -ExecutionPolicy Bypass -File scripts/sync-upstream.ps1 router
+Remove-TrackedOAuthDefaults
 
 $updatedVersion = Get-LocalRouterVersion
 Write-Host "9Router updated source: $updatedVersion"

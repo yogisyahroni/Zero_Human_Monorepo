@@ -61,8 +61,8 @@ export const PROVIDERS = {
   "gemini-cli": {
     baseUrl: "https://cloudcode-pa.googleapis.com/v1internal",
     format: "gemini-cli",
-    clientId: process.env.GEMINI_OAUTH_CLIENT_ID || "",
-    clientSecret: process.env.GEMINI_OAUTH_CLIENT_SECRET || ""
+    clientId: process.env.GEMINI_CLI_OAUTH_CLIENT_ID || process.env.GEMINI_OAUTH_CLIENT_ID || "",
+    clientSecret: process.env.GEMINI_CLI_OAUTH_CLIENT_SECRET || process.env.GEMINI_OAUTH_CLIENT_SECRET || ""
   },
   codex: {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
@@ -250,6 +250,14 @@ export const PROVIDERS = {
   deepseek: {
     baseUrl: "https://api.deepseek.com/chat/completions",
     format: "openai"
+  },
+  commandcode: {
+    baseUrl: "https://api.commandcode.ai/alpha/generate",
+    format: "commandcode",
+    headers: {
+      "x-command-code-version": "0.25.7",
+      "x-cli-environment": "cli"
+    }
   },
   groq: {
     baseUrl: "https://api.groq.com/openai/v1/chat/completions",
