@@ -61,6 +61,12 @@ Open:
 - Hermes upstream dashboard: <http://localhost:9119>
 - Paperclip upstream: <http://localhost:3100>
 
+Set up AI providers from the 9Router UI at <http://localhost:20128>. 9Router is
+the central AI gateway for Hermes, Paperclip, and Zero-Human; other services
+only call 9Router through internal URLs. Environment provider keys in `.env`
+are bootstrap/fallback values for 9Router, not separate provider configuration
+for every service.
+
 The three upstream projects run as independent Docker services. Zero-Human
 adapter services run alongside them and communicate through Redis plus the
 configured service URLs.

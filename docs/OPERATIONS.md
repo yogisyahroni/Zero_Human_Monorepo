@@ -1,14 +1,35 @@
 # Zero-Human Operations Notes
 
+## AI Provider Routing
+
+Zero-Human uses 9Router as the single AI provider gateway. Configure provider
+keys and model routing in the 9Router UI first:
+
+- Local: `http://localhost:20128`
+- Staging: use your configured `ZH_9ROUTER_PUBLIC_URL`, or access it through
+  your private network/VPN if you do not expose 9Router publicly.
+
+Hermes, Paperclip, and Zero-Human should not hold provider keys directly. They
+call 9Router through internal service URLs such as `http://9router:20128` or
+the `zh-router-adapter`.
+
+`OPENAI_BASE_URL=http://9router:20128/v1` plus
+`ZH_ROUTER_COMPAT_API_KEY=sk_9router` is only the OpenAI-compatible internal
+contract for services that expect an OpenAI-style API. Real provider keys
+belong to 9Router.
+
 ## Secrets
 
 Keep secrets in `.env` or your deployment secret store. Do not commit `.env` files.
 
-Common keys:
+Common provider keys for 9Router bootstrap/fallback:
+- `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `OPENROUTER_API_KEY`
 - `GLM_API_KEY`
-- `OPENAI_API_KEY`
+
+Other stack secrets:
+- `ZH_ROUTER_COMPAT_API_KEY`
 - `DISCORD_WEBHOOK_URL`
 - `BETTER_AUTH_SECRET`
 

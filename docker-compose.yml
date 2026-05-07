@@ -42,6 +42,7 @@ services:
       DATA_DIR: /app/data
       BASE_URL: http://localhost:20128
       NEXT_PUBLIC_BASE_URL: http://localhost:20128
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       GLM_API_KEY: ${GLM_API_KEY:-}
@@ -67,7 +68,7 @@ services:
       HERMES_GID: ${HERMES_GID:-10000}
       HERMES_HOME: /opt/data
       OPENAI_BASE_URL: http://9router:20128/v1
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk_9router}
+      OPENAI_API_KEY: ${ZH_ROUTER_COMPAT_API_KEY:-sk_9router}
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     ports:
       - "9119:9119"
