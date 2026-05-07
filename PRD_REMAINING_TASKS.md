@@ -50,9 +50,9 @@ Tasks:
 - [x] Add `POST /api/tasks/:taskId/diff` to show worktree diff.
 - [x] Add `POST /api/tasks/:taskId/approve` merge behavior for the internal source clone.
 - [x] Add `POST /api/tasks/:taskId/reject` cleanup behavior.
-- [ ] Respect `orchestrator.auto_merge` and `approval_required`.
+- [x] Respect `orchestrator.auto_merge` and `approval_required`.
 - [x] Block merge if validation failed or budget exceeded.
-- [ ] Add host-repo export/apply flow for approved internal-clone commits.
+- [x] Add host-repo export/apply flow for approved internal-clone commits.
 
 Acceptance criteria:
 - Dashboard can display task diff.
@@ -107,7 +107,7 @@ Tasks:
   - `decolua/9router`
   - `NousResearch/hermes-agent`
   - `paperclipai/paperclip`
-- [ ] Add automated dry-run sync check to CI without opening a PR.
+- [x] Add automated dry-run sync check to CI without opening a PR.
 
 Acceptance criteria:
 - Weekly sync creates a PR when upstream changes.

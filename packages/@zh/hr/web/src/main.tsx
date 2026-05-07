@@ -43,6 +43,9 @@ type Task = {
   validationCommand?: string;
   validationOutput?: string;
   executorOutput?: string;
+  hostCommit?: string;
+  hostApplyStatus?: "applied" | "patch_written" | "skipped";
+  hostPatchPath?: string;
   costAccumulated?: number;
   result?: string;
   createdAt: string;
@@ -364,6 +367,8 @@ function App() {
             <div className="protectionStats">
               <span>Remaining <strong>{money(budgetRemaining)}</strong></span>
               <span>Approval gate <strong>{money(state.policies.approval_threshold_usd)}</strong></span>
+              <span>Approval <strong>{state.policies.approval_required ? "required" : "optional"}</strong></span>
+              <span>Auto merge <strong>{state.policies.auto_merge ? "on" : "off"}</strong></span>
               <span>Paused agents <strong>{pausedAgents}</strong></span>
             </div>
           </div>
@@ -429,6 +434,13 @@ function App() {
                     <span>{task.id} · {task.agentId} · P{task.priority}</span>
                     {task.branchName && <span>{task.branchName}</span>}
                     {task.worktreePath && <small className="monoPath">{task.worktreePath}</small>}
+                    {task.hostApplyStatus && (
+                      <span>
+                        Host export {task.hostApplyStatus}
+                        {task.hostCommit ? ` · ${task.hostCommit}` : ""}
+                      </span>
+                    )}
+                    {task.hostPatchPath && <small className="monoPath">{task.hostPatchPath}</small>}
                     {task.result && <p>{task.result}</p>}
                     {task.changedFiles && task.changedFiles.length > 0 && (
                       <div className="changeList">

@@ -126,7 +126,7 @@ async function runGit(args: string[], cwd = sourceRepoPath): Promise<string> {
   const { stdout, stderr } = await execFileAsync("git", args, {
     cwd,
     windowsHide: true,
-    maxBuffer: 1024 * 1024
+    maxBuffer: 10 * 1024 * 1024
   });
   return [stdout, stderr].filter(Boolean).join("\n").trim();
 }
@@ -188,19 +188,99 @@ async function cleanupWorktree(task: Task): Promise<void> {
   await runGit(["worktree", "prune"]).catch(() => "");
 }
 
-async function approveWorktree(task: Task): Promise<{ commit: string; mergeOutput: string }> {
+function writeApprovalPatch(task: Task, commit: string, patchContent: string): string {
+  const patchDir = path.join(hostRepoPath, ".zero-human", "approved");
+  fs.mkdirSync(patchDir, { recursive: true });
+  const patchPath = path.join(patchDir, `${task.id}-${commit.slice(0, 12)}.patch`);
+  fs.writeFileSync(patchPath, patchContent, "utf8");
+  return patchPath;
+}
+
+async function applyApprovedCommitToHost(task: Task, commit: string, patchContent: string): Promise<{ status: "applied" | "patch_written" | "skipped"; output: string; hostCommit?: string; patchPath?: string }> {
+  if (path.resolve(hostRepoPath) === path.resolve(sourceRepoPath)) {
+    return { status: "skipped", output: "Source repo is the host repo; no export step needed." };
+  }
+  if (!fs.existsSync(path.join(hostRepoPath, ".git"))) {
+    const patchPath = writeApprovalPatch(task, commit, patchContent);
+    return { status: "patch_written", patchPath, output: `Host repo is unavailable; wrote patch to ${patchPath}.` };
+  }
+
+  await runGit(["config", "--global", "--add", "safe.directory", hostRepoPath]).catch(() => "");
+  const hostStatus = await runGit(["status", "--short"], hostRepoPath);
+  if (hostStatus.trim()) {
+    const patchPath = writeApprovalPatch(task, commit, patchContent);
+    return {
+      status: "patch_written",
+      patchPath,
+      output: `Host repo has uncommitted changes; wrote patch to ${patchPath} instead of cherry-picking.`
+    };
+  }
+
+  try {
+    const refToFetch = task.branchName ?? commit;
+    await runGit(["fetch", sourceRepoPath, refToFetch], hostRepoPath);
+    const output = await runGit(["cherry-pick", "FETCH_HEAD"], hostRepoPath);
+    const hostCommit = await runGit(["rev-parse", "--short", "HEAD"], hostRepoPath);
+    return { status: "applied", output, hostCommit };
+  } catch (error) {
+    await runGit(["cherry-pick", "--abort"], hostRepoPath).catch(() => "");
+    const patchPath = writeApprovalPatch(task, commit, patchContent);
+    return {
+      status: "patch_written",
+      patchPath,
+      output: `Host cherry-pick failed: ${(error as Error).message}. Wrote patch to ${patchPath}.`
+    };
+  }
+}
+
+async function approveWorktree(task: Task): Promise<{ commit: string; mergeOutput: string; hostOutput: string; hostCommit?: string; hostStatus: string; patchPath?: string }> {
   const worktreePath = requireTaskWorktree(task);
   await runGit(["add", "-A"], worktreePath);
   const status = await runGit(["status", "--short"], worktreePath);
   if (!status.trim()) throw new Error("No worktree changes to approve");
 
   await runGit(["commit", "-m", `task: ${task.id}`], worktreePath);
-  const commit = await runGit(["rev-parse", "--short", "HEAD"], worktreePath);
+  const commit = await runGit(["rev-parse", "HEAD"], worktreePath);
+  const shortCommit = await runGit(["rev-parse", "--short", "HEAD"], worktreePath);
+  const patchContent = await runGit(["format-patch", "-1", "--stdout", commit], worktreePath);
   await runGit(["checkout", "main"], sourceRepoPath).catch(() => "");
   const mergeOutput = task.branchName
     ? await runGit(["merge", "--no-ff", task.branchName, "-m", `merge: ${task.id}`], sourceRepoPath)
     : "No branchName recorded; commit remains in task worktree.";
-  return { commit, mergeOutput };
+  const hostApply = await applyApprovedCommitToHost(task, commit, patchContent);
+  return {
+    commit: shortCommit,
+    mergeOutput,
+    hostOutput: hostApply.output,
+    hostCommit: hostApply.hostCommit,
+    hostStatus: hostApply.status,
+    patchPath: hostApply.patchPath
+  };
+}
+
+async function maybeAutoApprove(task: Task): Promise<void> {
+  if (config.orchestrator.approval_required || !config.orchestrator.auto_merge) return;
+  if (task.status !== "pending_review") return;
+  if (currentSpend() >= config.company.budget_usd) return;
+
+  try {
+    const approved = await approveWorktree(task);
+    await cleanupWorktree(task);
+    task.status = "done";
+    task.hostCommit = approved.hostCommit;
+    task.hostApplyStatus = approved.hostStatus as Task["hostApplyStatus"];
+    task.hostPatchPath = approved.patchPath;
+    task.result = `${task.result ?? ""} Auto-approved commit ${approved.commit}. Host export: ${approved.hostOutput}`.trim();
+    task.updatedAt = new Date().toISOString();
+    const agent = agents.get(task.agentId);
+    if (agent) agent.status = "idle";
+    addEvent("zh:task:auto_approved", `Auto-approved ${task.id}`);
+  } catch (error) {
+    task.status = "error";
+    task.result = `Auto-approve failed: ${(error as Error).message}`;
+    task.updatedAt = new Date().toISOString();
+    addEvent(ZHEvent.AGENT_ERROR, `Auto-approve failed for ${task.id}`);
+  }
 }
 
 function currentSpend(): number {
@@ -355,7 +435,7 @@ bus.on<Task>(ZHEvent.TASK_STARTED, (message) => {
   const agent = agents.get(task.agentId);
   if (agent) agent.status = "working";
 });
-bus.on<Task>(ZHEvent.TASK_COMPLETED, (message) => {
+bus.on<Task>(ZHEvent.TASK_COMPLETED, async (message) => {
   const previous = tasks.get(message.payload.id);
   const reportedCost = Math.max(message.payload.costAccumulated ?? 0, previous?.costAccumulated ?? 0);
   const task = { ...message.payload, costAccumulated: reportedCost };
@@ -365,6 +445,7 @@ bus.on<Task>(ZHEvent.TASK_COMPLETED, (message) => {
     if (agent.status !== "paused") agent.status = "reviewing";
     agent.costAccumulatedUsd += Math.max(0, reportedCost - (previous?.costAccumulated ?? 0));
   }
+  await maybeAutoApprove(task);
 });
 bus.on<{ costUsd: number; inputTokens: number; outputTokens: number; agentId?: string; taskId?: string }>(ZHEvent.COST_ACCUMULATED, async (message) => {
   routerMetrics.requests += 1;
@@ -526,6 +607,7 @@ app.post("/api/tasks", async (req, res) => {
         currentAgent.costAccumulatedUsd += current.costAccumulated;
       }
       addEvent(ZHEvent.TASK_COMPLETED, `Demo completed ${current.id}`);
+      void maybeAutoApprove(current);
     }, 1200);
   }
   res.status(201).json(task);
@@ -559,7 +641,10 @@ app.post("/api/tasks/:taskId/approve", async (req, res) => {
   try {
     const approved = await approveWorktree(task);
     await cleanupWorktree(task);
-    task.result = `${task.result ?? ""} Approved commit ${approved.commit}. ${approved.mergeOutput}`.trim();
+    task.hostCommit = approved.hostCommit;
+    task.hostApplyStatus = approved.hostStatus as Task["hostApplyStatus"];
+    task.hostPatchPath = approved.patchPath;
+    task.result = `${task.result ?? ""} Approved commit ${approved.commit}. ${approved.mergeOutput} Host export: ${approved.hostOutput}`.trim();
   } catch (error) {
     task.status = "error";
     task.result = `Approve failed: ${(error as Error).message}`;

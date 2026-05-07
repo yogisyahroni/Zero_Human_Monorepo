@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/upstream-sync.yml"
+      - "patches/**"
+      - "scripts/sync-upstream.ps1"
+      - "packages/@zh/**/upstream/**"
 
 jobs:
   sync:
@@ -29,6 +35,14 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Sync mode
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "DRY_RUN: upstream sync will be tested without opening a PR." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "SYNC_RUN: upstream sync may open a PR when changes exist." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Pull upstream subtree
         run: |
@@ -62,7 +76,7 @@ jobs:
           pnpm --filter @zh/${{ matrix.upstream.name }} build
 
       - name: Create PR
-        if: success()
+        if: success() && github.event_name != 'pull_request'
         uses: peter-evans/create-pull-request@v6
         with:
           title: "sync(upstream): ${{ matrix.upstream.name }} update"

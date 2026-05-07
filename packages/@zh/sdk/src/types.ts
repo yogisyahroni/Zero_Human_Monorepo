@@ -41,6 +41,9 @@ export interface Task {
   validationCommand?: string;
   validationOutput?: string;
   executorOutput?: string;
+  hostCommit?: string;
+  hostApplyStatus?: "applied" | "patch_written" | "skipped";
+  hostPatchPath?: string;
   costAccumulated?: number;
   result?: string;
   createdAt: string;

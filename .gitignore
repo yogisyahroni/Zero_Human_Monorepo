@@ -7,4 +7,5 @@ dist/
 .DS_Store
 worktrees/
 data/
+.zero-human/approved/
 packages/@zh/hr/web/dist/
