@@ -12,6 +12,7 @@ import {
   RedisEventBus,
   type Agent,
   type AgentRole,
+  type SkillDefinition,
   type Task,
   type TaskType,
   ZHEvent
@@ -48,6 +49,7 @@ const stateDir = process.env.ZH_STATE_PATH ?? path.join(hostRepoPath, ".zero-hum
 const budgetOverridesPath = path.join(stateDir, "budget-overrides.json");
 const repositoriesPath = path.join(stateDir, "repositories.json");
 const hiringRequestsPath = path.join(stateDir, "hiring-requests.json");
+const customSkillsPath = path.join(stateDir, "custom-skills.json");
 type ServiceHealth = {
   name: string;
   url: string;
@@ -90,6 +92,16 @@ type RegisteredRepository = {
   error?: string;
 };
 type PublicRepository = Omit<RegisteredRepository, "token" | "sshPrivateKey" | "sshPassphrase">;
+type SkillImportReport = {
+  id: string;
+  repositoryId: string;
+  repositoryName: string;
+  scanned: number;
+  imported: number;
+  duplicates: number;
+  skipped: Array<{ name: string; sourcePath: string; duplicateOf: string; reason: string }>;
+  createdAt: string;
+};
 type HiringRequestStatus = "pending_approval" | "approved" | "rejected";
 type HiringRequest = {
   id: string;
@@ -139,6 +151,29 @@ function loadBudgetOverrides(): void {
 function saveBudgetOverrides(overrides: BudgetOverrides): void {
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(budgetOverridesPath, JSON.stringify({ ...overrides, updatedAt: new Date().toISOString() }, null, 2));
+}
+
+function loadCustomSkills(): Record<string, SkillDefinition> {
+  try {
+    return JSON.parse(fs.readFileSync(customSkillsPath, "utf8")) as Record<string, SkillDefinition>;
+  } catch {
+    return {};
+  }
+}
+
+const customSkillRegistry: Record<string, SkillDefinition> = loadCustomSkills();
+const skillImportReports: SkillImportReport[] = [];
+
+function activeSkillRegistry(): Record<string, SkillDefinition> {
+  return {
+    ...(config.skill_registry ?? {}),
+    ...customSkillRegistry
+  };
+}
+
+function saveCustomSkills(): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(customSkillsPath, JSON.stringify(customSkillRegistry, null, 2));
 }
 
 loadBudgetOverrides();
@@ -241,6 +276,213 @@ function sanitizeAgentId(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_ -]+/g, "").replace(/\s+/g, "_").replace(/-+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || `agent_${nanoid(6)}`;
 }
 
+function ascii(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7E]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function slug(value: string): string {
+  return ascii(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 100);
+}
+
+function parseSkillFrontmatter(raw: string): { name?: string; description?: string; category?: string; tags: string[]; tools: string[] } {
+  const meta = { tags: [] as string[], tools: [] as string[] };
+  if (!raw.startsWith("---")) {
+    return {
+      ...meta,
+      name: raw.match(/^#\s+(.+)$/m)?.[1],
+      description: raw.match(/^>\s*(.+)$/m)?.[1]
+    };
+  }
+  const end = raw.indexOf("\n---", 3);
+  const text = end === -1 ? "" : raw.slice(3, end);
+  const arrayValue = (key: string) => {
+    const match = text.match(new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]`, "m"));
+    return match?.[1]?.split(",").map((item) => item.trim().replace(/^["']|["']$/g, "")).filter(Boolean) ?? [];
+  };
+  return {
+    name: text.match(/^name:\s*["']?([^"'\n]+)["']?/m)?.[1] ?? raw.match(/^#\s+(.+)$/m)?.[1],
+    description: text.match(/^description:\s*["']?([^"'\n]+)["']?/m)?.[1],
+    category: text.match(/^category:\s*["']?([^"'\n]+)["']?/m)?.[1],
+    tags: arrayValue("tags"),
+    tools: arrayValue("requires_toolsets")
+  };
+}
+
+const skillCategoryRules: Array<[RegExp, string]> = [
+  [/frontend|react|web|ui|ux|component|css|html|browser/, "web-development"],
+  [/design|figma|brand|creative|image|video|presentation|slide/, "creative"],
+  [/docker|kubernetes|deploy|ci|cloud|server|infra|terminal|shell/, "devops"],
+  [/security|auth|secret|credential|password|privacy|license|legal/, "security"],
+  [/marketing|seo|content|campaign|growth|sales|crm/, "marketing"],
+  [/finance|billing|payment|invoice|accounting|budget/, "finance"],
+  [/research|search|crawl|scrape|analysis|paper|data/, "research"],
+  [/test|qa|validation|playwright|e2e/, "qa"],
+  [/product|roadmap|prd|spec|planning|strategy/, "product"],
+  [/support|docs|customer|ticket|feedback/, "support"]
+];
+
+const skillRoleRules: Array<[RegExp, AgentRole[]]> = [
+  [/frontend|react|web|ui|ux|css|browser|accessibility/, ["frontend", "design", "qa"]],
+  [/design|figma|brand|creative|image|video/, ["design", "marketing", "product"]],
+  [/backend|api|database|server|integration|sdk/, ["backend", "cto", "qa"]],
+  [/docker|kubernetes|deploy|ci|infra|terminal|shell/, ["devops", "backend", "cto"]],
+  [/security|auth|secret|credential|password|privacy|license|legal/, ["legal", "devops", "cto"]],
+  [/marketing|seo|content|campaign|growth/, ["marketing", "sales", "product"]],
+  [/sales|crm|proposal|customer/, ["sales", "support", "marketing"]],
+  [/finance|billing|payment|invoice|accounting|budget/, ["finance", "operations", "legal"]],
+  [/research|search|crawl|scrape|analysis|paper|data/, ["research", "product", "marketing"]],
+  [/support|docs|ticket|feedback/, ["support", "operations", "product"]]
+];
+
+function inferSkillCategory(text: string, fallbackPath: string, explicit?: string): string {
+  if (explicit) return slug(explicit).replaceAll("_", "-");
+  for (const [pattern, category] of skillCategoryRules) {
+    if (pattern.test(text)) return category;
+  }
+  const pathParts = fallbackPath.split(/[\\/]/).filter(Boolean);
+  return slug(pathParts.find((part) => part.toLowerCase() !== "skills" && part.toLowerCase() !== "skill.md") ?? "operations").replaceAll("_", "-");
+}
+
+function inferSkillRoles(text: string): AgentRole[] {
+  const roles = new Set<AgentRole>();
+  for (const [pattern, mappedRoles] of skillRoleRules) {
+    if (pattern.test(text)) mappedRoles.forEach((role) => roles.add(role));
+  }
+  if (roles.size === 0) roles.add("operations");
+  return Array.from(roles).slice(0, 5);
+}
+
+function inferSkillTriggers(name: string, category: string, relativePath: string, tags: string[], description: string): string[] {
+  const words = [
+    name,
+    category,
+    ...relativePath.split(/[\\/_.-]/),
+    ...tags,
+    ...description.toLowerCase().split(/\W+/).filter((word) => word.length > 4)
+  ];
+  return Array.from(new Set(words.map(slug).filter(Boolean))).slice(0, 12);
+}
+
+function requiresSkillApproval(text: string): boolean {
+  return /admin|auth|billing|browser|credential|database|deploy|docker|email|finance|git|legal|password|payment|privacy|secret|security|shell|ssh|terminal|token/i.test(text);
+}
+
+function descriptionWords(value: string): Set<string> {
+  return new Set(value.toLowerCase().split(/\W+/).filter((word) => word.length > 4));
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  const intersection = Array.from(a).filter((word) => b.has(word)).length;
+  const union = new Set([...a, ...b]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function findDuplicateSkill(key: string, candidate: SkillDefinition): { duplicateOf: string; reason: string } | null {
+  const registry = activeSkillRegistry();
+  if (registry[key]) return { duplicateOf: key, reason: "same generated key" };
+  const sourcePath = candidate.sourcePath?.toLowerCase();
+  const candidateName = candidate.triggers[0]?.toLowerCase() ?? key.replace(/^repo_skill_/, "");
+  const candidateTriggers = new Set(candidate.triggers.map((trigger) => trigger.toLowerCase()));
+  const candidateDescription = descriptionWords(candidate.description);
+  for (const [existingKey, existing] of Object.entries(registry)) {
+    if (sourcePath && existing.sourcePath?.toLowerCase() === sourcePath) {
+      return { duplicateOf: existingKey, reason: "same source path" };
+    }
+    const existingSlug = slug(existingKey);
+    const existingSourceSlug = slug(existing.sourcePath ?? "");
+    if (existingSlug === candidateName || existingSlug.endsWith(`_${candidateName}`) || existingSourceSlug === candidateName || existingSourceSlug.endsWith(`_${candidateName}`)) {
+      return { duplicateOf: existingKey, reason: "same skill name" };
+    }
+    const sharedTriggers = existing.triggers.filter((trigger) => candidateTriggers.has(trigger.toLowerCase())).length;
+    const similarity = jaccard(candidateDescription, descriptionWords(existing.description));
+    if (sharedTriggers >= 4 && similarity >= 0.45) {
+      return { duplicateOf: existingKey, reason: "similar triggers and description" };
+    }
+  }
+  return null;
+}
+
+function walkSkillFiles(root: string): string[] {
+  const ignored = new Set([".git", "node_modules", "dist", "build", ".next", ".turbo", "coverage"]);
+  const files: string[] = [];
+  function walk(current: string): void {
+    if (files.length >= 1000) return;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (ignored.has(entry.name)) continue;
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(fullPath);
+      if (entry.isFile() && entry.name.toLowerCase() === "skill.md") files.push(fullPath);
+    }
+  }
+  walk(root);
+  return files;
+}
+
+function importSkillsFromRepository(repository: RegisteredRepository, subPath = ""): SkillImportReport {
+  const scanRoot = path.resolve(repository.path, subPath);
+  const resolvedRepoPath = path.resolve(repository.path);
+  if (scanRoot !== resolvedRepoPath && !scanRoot.startsWith(`${resolvedRepoPath}${path.sep}`)) {
+    throw new Error("Skill path must stay inside the selected repository");
+  }
+  if (!fs.existsSync(scanRoot)) throw new Error(`Skill path does not exist: ${subPath || "."}`);
+  const report: SkillImportReport = {
+    id: `skills_${nanoid(8)}`,
+    repositoryId: repository.id,
+    repositoryName: repository.name,
+    scanned: 0,
+    imported: 0,
+    duplicates: 0,
+    skipped: [],
+    createdAt: new Date().toISOString()
+  };
+  for (const filePath of walkSkillFiles(scanRoot)) {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const relativePath = path.relative(repository.path, filePath).replaceAll(path.sep, "/");
+    const meta = parseSkillFrontmatter(raw);
+    const fallbackName = path.basename(path.dirname(filePath));
+    const name = slug(meta.name ?? fallbackName);
+    const description = ascii(meta.description ?? raw.match(/^#\s+(.+)$/m)?.[1] ?? `Skill imported from ${repository.name}/${relativePath}.`);
+    const text = `${name} ${description} ${meta.tags.join(" ")} ${relativePath}`.toLowerCase();
+    const category = inferSkillCategory(text, relativePath, meta.category);
+    const skill: SkillDefinition = {
+      category,
+      description,
+      roles: inferSkillRoles(text),
+      triggers: inferSkillTriggers(name, category, relativePath, meta.tags, description),
+      tools: Array.from(new Set([...meta.tools.map(slug).filter(Boolean), "repo-skill"])).slice(0, 8),
+      status: "available",
+      requiresApproval: requiresSkillApproval(text),
+      source: "repo-import",
+      sourcePath: `${repository.id}:${relativePath}`
+    };
+    const keyBase = `repo_skill_${sanitizeRepositoryId(repository.id)}_${name}`;
+    let key = keyBase;
+    let counter = 2;
+    while (customSkillRegistry[key]) key = `${keyBase}_${counter++}`;
+    report.scanned += 1;
+    const duplicate = findDuplicateSkill(key, skill);
+    if (duplicate) {
+      report.duplicates += 1;
+      report.skipped.push({ name, sourcePath: skill.sourcePath ?? relativePath, ...duplicate });
+      continue;
+    }
+    customSkillRegistry[key] = skill;
+    report.imported += 1;
+  }
+  saveCustomSkills();
+  skillImportReports.unshift(report);
+  skillImportReports.splice(20);
+  return report;
+}
+
 function roleModelCombo(role: AgentRole): string {
   return ["cto", "backend", "frontend", "qa", "devops", "product", "design"].includes(role) ? "cheap_stack" : "free_stack";
 }
@@ -257,10 +499,10 @@ function roleBudget(role: AgentRole): number {
 
 function skillsForRole(role: AgentRole, description: string): string[] {
   const lowered = description.toLowerCase();
-  const registryRoleSkills = Object.entries(config.skill_registry ?? {})
+  const registryRoleSkills = Object.entries(activeSkillRegistry())
     .filter(([, definition]) => definition.roles.includes(role))
     .map(([skill]) => skill);
-  const registryTriggerSkills = Object.entries(config.skill_registry ?? {})
+  const registryTriggerSkills = Object.entries(activeSkillRegistry())
     .filter(([, definition]) => definition.triggers.some((trigger) => lowered.includes(trigger.toLowerCase())))
     .map(([skill]) => skill);
   return Array.from(new Set([
@@ -276,7 +518,7 @@ function mapHireRequest(input: { title: string; department?: string; description
   const scored = roles.map((role) => {
     const direct = text.includes(role) ? 4 : 0;
     const configuredSkillHits = roleSkillCatalog[role].filter((skill) => text.includes(skill.replaceAll("_", " "))).length;
-    const registryHits = Object.values(config.skill_registry ?? {}).filter((definition) =>
+    const registryHits = Object.values(activeSkillRegistry()).filter((definition) =>
       definition.roles.includes(role) && (
         text.includes(definition.category.toLowerCase()) ||
         definition.triggers.some((trigger) => text.includes(trigger.toLowerCase())) ||
@@ -335,10 +577,10 @@ for (const request of hiringRequests.values()) {
 
 function inferRequiredSkills(agent: Agent, type: TaskType, description: string): string[] {
   const lowered = description.toLowerCase();
-  const registryRoleSkills = Object.entries(config.skill_registry ?? {})
+  const registryRoleSkills = Object.entries(activeSkillRegistry())
     .filter(([, definition]) => definition.roles.includes(agent.role))
     .map(([skill]) => skill);
-  const registryTriggerSkills = Object.entries(config.skill_registry ?? {})
+  const registryTriggerSkills = Object.entries(activeSkillRegistry())
     .filter(([, definition]) => definition.triggers.some((trigger) => lowered.includes(trigger.toLowerCase())))
     .map(([skill]) => skill);
   return Array.from(new Set([
@@ -923,7 +1165,8 @@ app.get("/api/state", async (_req, res) => {
     alerts,
     upstreams: upstreamStatus(),
     repositories: listRepositories(),
-    skillRegistry: config.skill_registry ?? {},
+    skillRegistry: activeSkillRegistry(),
+    skillImports: skillImportReports,
     hiringRequests: Array.from(hiringRequests.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     budget: {
       global: companyState.budget_usd,
@@ -1002,6 +1245,19 @@ app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
     res.json(publicRepository(synced));
   } catch (error) {
     res.status(404).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/skills/import-repo", async (req, res) => {
+  const { repositoryId, path: skillPath } = (req.body ?? {}) as { repositoryId?: string; path?: string };
+  try {
+    const repository = getRepository(repositoryId);
+    if (repository.id !== "default") await ensureSourceRepo(repository);
+    const report = importSkillsFromRepository(repository, skillPath?.trim() ?? "");
+    addEvent("zh:skills:imported", `Imported ${report.imported}/${report.scanned} skills from ${repository.name}`);
+    res.status(201).json(report);
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
   }
 });
 

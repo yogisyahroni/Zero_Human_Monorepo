@@ -94,6 +94,17 @@ type HiringRequest = {
   decisionNote?: string;
 };
 
+type SkillImportReport = {
+  id: string;
+  repositoryId: string;
+  repositoryName: string;
+  scanned: number;
+  imported: number;
+  duplicates: number;
+  skipped: Array<{ name: string; sourcePath: string; duplicateOf: string; reason: string }>;
+  createdAt: string;
+};
+
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
   infrastructure: { redisUrl: string; worktreeBase: string };
@@ -153,6 +164,7 @@ type State = {
   }>;
   repositories: RegisteredRepository[];
   hiringRequests: HiringRequest[];
+  skillImports: SkillImportReport[];
   skillRegistry: Record<string, {
     category: string;
     description: string;
@@ -185,6 +197,7 @@ const fallbackState: State = {
   upstreams: [],
   repositories: [],
   hiringRequests: [],
+  skillImports: [],
   skillRegistry: {},
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
@@ -247,6 +260,9 @@ function App() {
     sshPrivateKey: ""
   });
   const [repoError, setRepoError] = useState("");
+  const [skillImportDraft, setSkillImportDraft] = useState({ repositoryId: "default", path: "" });
+  const [skillImportError, setSkillImportError] = useState("");
+  const [latestSkillImport, setLatestSkillImport] = useState<SkillImportReport | null>(null);
   const [hireDraft, setHireDraft] = useState({
     title: "Brand Strategist",
     department: "Marketing",
@@ -294,6 +310,12 @@ function App() {
   const registryEntries = Object.entries(state.skillRegistry);
   const registryCategories = Array.from(new Set(registryEntries.map(([, skill]) => skill.category))).sort();
   const pendingHiring = state.hiringRequests.filter((request) => request.status === "pending_approval");
+
+  useEffect(() => {
+    if (!state.repositories.some((repo) => repo.id === skillImportDraft.repositoryId)) {
+      setSkillImportDraft((current) => ({ ...current, repositoryId: state.repositories[0]?.id ?? "default" }));
+    }
+  }, [skillImportDraft.repositoryId, state.repositories]);
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -376,6 +398,26 @@ function App() {
   async function syncRepository(id: string) {
     setBusy(true);
     await fetch(`/api/repositories/${id}/sync`, { method: "POST" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function importRepoSkills(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setSkillImportError("");
+    setLatestSkillImport(null);
+    const response = await fetch("/api/skills/import-repo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(skillImportDraft)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setSkillImportError(body.error ?? "Failed to import skills");
+    } else {
+      setLatestSkillImport(body);
+    }
     await refresh();
     setBusy(false);
   }
@@ -877,6 +919,56 @@ function App() {
                 ))}
               </div>
             </div>
+          </div>
+          )}
+
+          {activeView === "memory" && (
+          <div className="panel skillImport">
+            <div className="panelHead">
+              <div>
+                <h2>Repo skill import</h2>
+                <p>Scan SKILL.md files, skip duplicates, and map new skills into company roles.</p>
+              </div>
+              <FolderGit2 size={20} />
+            </div>
+            <form className="repoForm" onSubmit={importRepoSkills}>
+              <label>
+                Repository
+                <select
+                  value={skillImportDraft.repositoryId}
+                  onChange={(event) => setSkillImportDraft((current) => ({ ...current, repositoryId: event.target.value }))}
+                >
+                  {state.repositories.map((repo) => (
+                    <option value={repo.id} key={repo.id}>{repo.name} · {repo.status}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Path
+                <input
+                  value={skillImportDraft.path}
+                  placeholder="skills or leave empty for whole repo"
+                  onChange={(event) => setSkillImportDraft((current) => ({ ...current, path: event.target.value }))}
+                />
+              </label>
+              <button disabled={busy || !skillImportDraft.repositoryId}>
+                <Plus size={15} /> Import skills
+              </button>
+              {skillImportError && <p className="formWarning">{skillImportError}</p>}
+            </form>
+            {(latestSkillImport ?? state.skillImports[0]) && (
+              <article className="importReport">
+                <strong>{(latestSkillImport ?? state.skillImports[0]).repositoryName}</strong>
+                <span>
+                  {(latestSkillImport ?? state.skillImports[0]).imported} imported · {(latestSkillImport ?? state.skillImports[0]).duplicates} duplicates · {(latestSkillImport ?? state.skillImports[0]).scanned} scanned
+                </span>
+                {(latestSkillImport ?? state.skillImports[0]).skipped.slice(0, 4).map((item) => (
+                  <small key={`${item.sourcePath}-${item.duplicateOf}`}>
+                    {item.name} skipped: {item.reason} ({item.duplicateOf})
+                  </small>
+                ))}
+              </article>
+            )}
           </div>
           )}
 

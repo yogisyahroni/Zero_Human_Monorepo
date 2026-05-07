@@ -450,6 +450,22 @@ textarea {
   display: grid;
   gap: 10px;
 }
+
+.importReport {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 7px;
+}
+
+.importReport span,
+.importReport small {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .repoRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
