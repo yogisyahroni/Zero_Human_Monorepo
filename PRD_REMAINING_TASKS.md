@@ -17,24 +17,27 @@ Done:
 - Basic budget tracking and auto-pause guard.
 - Basic skill telemetry via `zh:skill:learned`.
 - GitHub upstream sync workflow exists at `.github/workflows/upstream-sync.yml`.
+- Real executor v1: HR creates isolated git worktrees from an internal Docker clone, Brain writes executor artifacts, captures changed files, and runs validation.
+- Approval v1: diff endpoint, approve commit/merge into internal source clone, and reject cleanup endpoints.
 
 ## Priority 1: Real Executor Flow
 
 Goal: make tasks edit code in isolated worktrees instead of stopping at `pending_review` with a planning note.
 
 Tasks:
-- [ ] Add worktree manager in `@zh/hr`.
-- [ ] Create a unique git branch/worktree for every task.
-- [ ] Persist `worktreePath` and `branchName` on task records.
-- [ ] Add executor handoff payload from Brain to Claude Code/Codex container.
-- [ ] Mount only the task worktree as writable for executor containers.
-- [ ] Capture executor stdout/stderr and attach summary to task result.
-- [ ] Run configured validation command before marking task `pending_review`.
+- [x] Add worktree manager in `@zh/hr`.
+- [x] Create a unique git branch/worktree for every task.
+- [x] Persist `worktreePath` and `branchName` on task records.
+- [x] Add executor handoff payload from HR to Brain.
+- [x] Mount only the task worktree as writable for the Brain executor v1.
+- [x] Capture executor output and attach summary to task result.
+- [x] Run configured validation command before marking task `pending_review`.
+- [ ] Replace Brain executor v1 artifact writer with real Claude Code/Codex container execution.
 
 Acceptance criteria:
-- Dispatching a coding task creates a visible git worktree.
+- Dispatching a coding task creates an isolated git worktree in Docker.
 - Executor changes files only inside that worktree.
-- Task result includes changed files, test output, and next review action.
+- Task result includes changed files, validation output, and next review action.
 - Main branch remains untouched until human approval.
 
 ## Priority 2: Approval And Merge
@@ -42,11 +45,12 @@ Acceptance criteria:
 Goal: turn the current approval button into a real review gate.
 
 Tasks:
-- [ ] Add `POST /api/tasks/:taskId/diff` to show worktree diff.
-- [ ] Add `POST /api/tasks/:taskId/approve` merge behavior.
-- [ ] Add `POST /api/tasks/:taskId/reject` cleanup behavior.
+- [x] Add `POST /api/tasks/:taskId/diff` to show worktree diff.
+- [x] Add `POST /api/tasks/:taskId/approve` merge behavior for the internal source clone.
+- [x] Add `POST /api/tasks/:taskId/reject` cleanup behavior.
 - [ ] Respect `orchestrator.auto_merge` and `approval_required`.
-- [ ] Block merge if validation failed or budget exceeded.
+- [x] Block merge if validation failed or budget exceeded.
+- [ ] Add host-repo export/apply flow for approved internal-clone commits.
 
 Acceptance criteria:
 - Dashboard can display task diff.
@@ -144,4 +148,3 @@ Exposed services:
 - Hermes dashboard: `http://localhost:9119`
 - Paperclip upstream: `http://localhost:3100`
 - Zero-Human dashboard: `http://localhost:3003`
-

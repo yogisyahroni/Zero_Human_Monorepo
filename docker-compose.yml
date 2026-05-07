@@ -132,8 +132,11 @@ services:
       REDIS_URL: redis://redis:6379
       ZH_ROUTER_URL: http://zh-router-adapter:20129
       ZH_BRAIN_URL: http://hermes:9119
+      ZH_WORKTREE_BASE: /app/worktrees
     volumes:
       - brain-memory:/root/.hermes
+      - hr-worktrees:/app/worktrees
+      - worktree-source:/app/worktree-source
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
@@ -154,10 +157,15 @@ services:
       ZH_ROUTER_URL: http://zh-router-adapter:20129
       ZH_BRAIN_URL: http://zh-brain-adapter:8080
       ZH_HR_URL: http://paperclip:3100
+      ZH_REPO_PATH: /repo
+      ZH_WORKTREE_SOURCE_PATH: /app/worktree-source
+      ZH_WORKTREE_BASE: /app/worktrees
     ports:
       - "3003:3003"
     volumes:
       - hr-worktrees:/app/worktrees
+      - worktree-source:/app/worktree-source
+      - .:/repo
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
@@ -174,6 +182,7 @@ volumes:
   paperclip-pgdata:
   paperclip-data:
   hr-worktrees:
+  worktree-source:
 
 networks:
   zh-network:

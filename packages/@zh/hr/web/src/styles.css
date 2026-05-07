@@ -184,6 +184,52 @@ h2 {
   font-size: 13px;
   margin-top: 5px;
 }
+.monoPath {
+  display: block;
+  margin-top: 7px;
+  color: var(--accent-2);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.changeList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.changeList code {
+  border: 1px solid #3a403e;
+  background: #121515;
+  color: #ced2c8;
+  padding: 5px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.validationBox {
+  margin: 10px 0 0;
+  max-height: 118px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111515;
+  color: var(--muted);
+  padding: 9px;
+  font-size: 12px;
+}
+.diffBox {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #3a403e;
+  border-radius: 8px;
+  background: #0d1010;
+  color: #d9ddd4;
+  padding: 11px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
 .skillRow {
   display: flex;
   flex-wrap: wrap;

@@ -9,7 +9,7 @@ company:
 infrastructure:
   redis_url: "${REDIS_URL:-redis://localhost:6379}"
   docker_socket: "/var/run/docker.sock"
-  worktree_base: "./worktrees"
+  worktree_base: "${ZH_WORKTREE_BASE:-./worktrees}"
   services:
     router_url: "${ZH_ROUTER_URL:-http://localhost:20128}"
     brain_url: "${ZH_BRAIN_URL:-http://localhost:9119}"

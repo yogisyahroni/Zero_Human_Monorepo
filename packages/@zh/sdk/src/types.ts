@@ -36,6 +36,11 @@ export interface Task {
   priority: 1 | 2 | 3;
   status: TaskStatus;
   worktreePath?: string;
+  branchName?: string;
+  changedFiles?: string[];
+  validationCommand?: string;
+  validationOutput?: string;
+  executorOutput?: string;
   costAccumulated?: number;
   result?: string;
   createdAt: string;

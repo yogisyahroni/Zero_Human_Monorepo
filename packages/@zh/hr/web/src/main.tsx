@@ -38,6 +38,11 @@ type Task = {
   priority: 1 | 2 | 3;
   status: string;
   worktreePath?: string;
+  branchName?: string;
+  changedFiles?: string[];
+  validationCommand?: string;
+  validationOutput?: string;
+  executorOutput?: string;
   costAccumulated?: number;
   result?: string;
   createdAt: string;
@@ -113,6 +118,7 @@ function App() {
   const [type, setType] = useState("architecture");
   const [priority, setPriority] = useState<1 | 2 | 3>(2);
   const [busy, setBusy] = useState(false);
+  const [diffs, setDiffs] = useState<Record<string, { status: string; diff: string }>>({});
 
   async function refresh() {
     const response = await fetch("/api/state");
@@ -156,6 +162,21 @@ function App() {
   async function approve(taskId: string) {
     setBusy(true);
     await fetch(`/api/tasks/${taskId}/approve`, { method: "POST" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function loadDiff(taskId: string) {
+    setBusy(true);
+    const response = await fetch(`/api/tasks/${taskId}/diff`);
+    const diff = await response.json();
+    setDiffs((current) => ({ ...current, [taskId]: diff }));
+    setBusy(false);
+  }
+
+  async function reject(taskId: string) {
+    setBusy(true);
+    await fetch(`/api/tasks/${taskId}/reject`, { method: "POST" });
     await refresh();
     setBusy(false);
   }
@@ -338,14 +359,31 @@ function App() {
                   <div>
                     <strong>{task.description}</strong>
                     <span>{task.id} · {task.agentId} · P{task.priority}</span>
+                    {task.branchName && <span>{task.branchName}</span>}
+                    {task.worktreePath && <small className="monoPath">{task.worktreePath}</small>}
                     {task.result && <p>{task.result}</p>}
+                    {task.changedFiles && task.changedFiles.length > 0 && (
+                      <div className="changeList">
+                        {task.changedFiles.slice(0, 5).map((file) => <code key={file}>{file}</code>)}
+                      </div>
+                    )}
+                    {task.validationOutput && (
+                      <pre className="validationBox">{task.validationOutput}</pre>
+                    )}
                   </div>
                   <div className="taskActions">
                     <Status value={task.status} />
                     {task.status === "pending_review" && (
-                      <button onClick={() => approve(task.id)} disabled={busy}><Check size={15} /> Approve</button>
+                      <>
+                        <button onClick={() => loadDiff(task.id)} disabled={busy}>Diff</button>
+                        <button onClick={() => reject(task.id)} disabled={busy}>Reject</button>
+                        <button onClick={() => approve(task.id)} disabled={busy}><Check size={15} /> Approve</button>
+                      </>
                     )}
                   </div>
+                  {diffs[task.id] && (
+                    <pre className="diffBox">{diffs[task.id].diff || diffs[task.id].status || "No diff output."}</pre>
+                  )}
                 </article>
               ))}
             </div>

@@ -1,5 +1,10 @@
 import cors from "cors";
 import express from "express";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { agentsFromConfig, loadConfig, RedisEventBus, Task, upstreamSources, ZHEvent } from "@zh/sdk";
 
 const config = loadConfig();
@@ -10,6 +15,9 @@ const activeTasks = new Map<string, Task>();
 const bus = new RedisEventBus(config.infrastructure.redis_url, "brain");
 const routerUrl = config.infrastructure.services?.router_url?.replace(/\/$/, "") ?? "";
 const hermesUrl = config.infrastructure.services?.brain_url?.replace(/\/$/, "") ?? "";
+const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "../../../..");
 
 app.use(cors());
 app.use(express.json());
@@ -69,6 +77,83 @@ async function askRouter(task: Task, agentRole: string): Promise<string> {
   }
 }
 
+function resolveWorktreeBase(): string {
+  return path.isAbsolute(config.infrastructure.worktree_base)
+    ? config.infrastructure.worktree_base
+    : path.resolve(repoRoot, config.infrastructure.worktree_base);
+}
+
+function assertWorktreePath(worktreePath?: string): string {
+  if (!worktreePath) throw new Error("Task does not include a worktreePath");
+  const resolved = path.resolve(worktreePath);
+  const base = resolveWorktreeBase();
+  if (resolved !== base && !resolved.startsWith(`${base}${path.sep}`)) {
+    throw new Error(`Refusing to execute outside worktree base: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function runCommand(command: string, cwd: string): Promise<string> {
+  const [bin, ...args] = command.split(" ").filter(Boolean);
+  if (!bin) return "";
+  const { stdout, stderr } = await execFileAsync(bin, args, {
+    cwd,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024
+  });
+  return [stdout, stderr].filter(Boolean).join("\n").trim();
+}
+
+async function changedFiles(worktreePath: string): Promise<string[]> {
+  const output = await runCommand("git status --short", worktreePath);
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^.. /, ""));
+}
+
+async function runLocalExecutor(task: Task, executionNote: string): Promise<{
+  changedFiles: string[];
+  validationCommand: string;
+  validationOutput: string;
+  executorOutput: string;
+}> {
+  const worktreePath = assertWorktreePath(task.worktreePath);
+  const outputDir = path.join(worktreePath, ".zero-human", "tasks");
+  const outputPath = path.join(outputDir, `${task.id}.md`);
+  const validationCommand = task.validationCommand ?? "git status --short";
+  const content = [
+    `# ${task.id}`,
+    "",
+    `Agent: ${task.agentId}`,
+    `Type: ${task.type}`,
+    `Priority: P${task.priority}`,
+    `Branch: ${task.branchName ?? "unknown"}`,
+    "",
+    "## Request",
+    task.description,
+    "",
+    "## Router Execution Note",
+    executionNote,
+    "",
+    "## Next Review Action",
+    "Review this worktree diff from the Zero-Human dashboard, then approve or reject the task."
+  ].join("\n");
+
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(outputPath, content, "utf8");
+  await execFileAsync("git", ["config", "--global", "--add", "safe.directory", worktreePath], { windowsHide: true });
+  await execFileAsync("git", ["config", "--global", "--add", "safe.directory", "/repo"], { windowsHide: true }).catch(() => undefined);
+  const validationOutput = await runCommand(validationCommand, worktreePath);
+  return {
+    changedFiles: await changedFiles(worktreePath),
+    validationCommand,
+    validationOutput,
+    executorOutput: `Wrote ${path.relative(worktreePath, outputPath)}`
+  };
+}
+
 async function handleTask(task: Task): Promise<void> {
   const agent = agents.get(task.agentId);
   if (!agent) {
@@ -84,14 +169,37 @@ async function handleTask(task: Task): Promise<void> {
     checkHermes(),
     askRouter(task, agent.role)
   ]);
+  let executorResult: Awaited<ReturnType<typeof runLocalExecutor>>;
+  try {
+    executorResult = await runLocalExecutor(task, executionNote);
+  } catch (error) {
+    const failed: Task = {
+      ...task,
+      status: "error",
+      result: `Executor failed: ${(error as Error).message}`,
+      updatedAt: new Date().toISOString()
+    };
+    activeTasks.set(task.id, failed);
+    agent.status = "error";
+    await bus.publish(ZHEvent.AGENT_ERROR, { taskId: task.id, agentId: task.agentId, message: failed.result });
+    await bus.publish(ZHEvent.TASK_COMPLETED, failed);
+    return;
+  }
+
   const completed: Task = {
     ...task,
     status: "pending_review",
     result: [
       `${agent.role.toUpperCase()} prepared this ${task.type} task through the Hermes/Router bridge.`,
       `Hermes dashboard: ${hermes.ok ? `online (${hermes.status})` : `unavailable (${hermes.error ?? hermes.status ?? "unknown"})`}.`,
-      `Router note: ${executionNote}`
+      `Router note: ${executionNote}`,
+      `Executor: ${executorResult.executorOutput}`,
+      `Validation: ${executorResult.validationCommand}`
     ].join(" "),
+    changedFiles: executorResult.changedFiles,
+    validationCommand: executorResult.validationCommand,
+    validationOutput: executorResult.validationOutput,
+    executorOutput: executorResult.executorOutput,
     costAccumulated: 0,
     updatedAt: new Date().toISOString()
   };
