@@ -11,6 +11,7 @@ import {
   loadConfig,
   RedisEventBus,
   type Agent,
+  type AgentRole,
   type Task,
   type TaskType,
   ZHEvent
@@ -46,6 +47,7 @@ const repositoryBasePath = process.env.ZH_REPOSITORY_BASE ?? path.join(path.dirn
 const stateDir = process.env.ZH_STATE_PATH ?? path.join(hostRepoPath, ".zero-human", "state");
 const budgetOverridesPath = path.join(stateDir, "budget-overrides.json");
 const repositoriesPath = path.join(stateDir, "repositories.json");
+const hiringRequestsPath = path.join(stateDir, "hiring-requests.json");
 type ServiceHealth = {
   name: string;
   url: string;
@@ -88,6 +90,27 @@ type RegisteredRepository = {
   error?: string;
 };
 type PublicRepository = Omit<RegisteredRepository, "token" | "sshPrivateKey" | "sshPassphrase">;
+type HiringRequestStatus = "pending_approval" | "approved" | "rejected";
+type HiringRequest = {
+  id: string;
+  source: "paperclip" | "zero-human-ui" | "api";
+  title: string;
+  department?: string;
+  description?: string;
+  requestedRole?: string;
+  suggestedRole: AgentRole;
+  suggestedSkills: string[];
+  suggestedAgentId: string;
+  suggestedExecutor: Agent["executor"];
+  suggestedModelCombo: string;
+  suggestedBudgetUsd: number;
+  confidence: number;
+  status: HiringRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt?: string;
+  decisionNote?: string;
+};
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
@@ -197,6 +220,118 @@ const taskSkillCatalog: Record<TaskType, string[]> = {
   test: ["testing", "test_automation", "regression_testing"],
   deploy: ["deployment", "ci_cd", "release_validation"]
 };
+
+function loadHiringRequests(): Map<string, HiringRequest> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(hiringRequestsPath, "utf8")) as HiringRequest[];
+    return new Map(raw.map((request) => [request.id, request]));
+  } catch {
+    return new Map();
+  }
+}
+
+const hiringRequests = loadHiringRequests();
+
+function saveHiringRequests(): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(hiringRequestsPath, JSON.stringify(Array.from(hiringRequests.values()), null, 2));
+}
+
+function sanitizeAgentId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_ -]+/g, "").replace(/\s+/g, "_").replace(/-+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || `agent_${nanoid(6)}`;
+}
+
+function roleModelCombo(role: AgentRole): string {
+  return ["cto", "backend", "frontend", "qa", "devops", "product", "design"].includes(role) ? "cheap_stack" : "free_stack";
+}
+
+function roleExecutor(role: AgentRole): Agent["executor"] {
+  return ["finance", "support", "operations"].includes(role) ? "bash" : "codex";
+}
+
+function roleBudget(role: AgentRole): number {
+  if (["cto", "backend", "frontend", "devops"].includes(role)) return 15;
+  if (["product", "design", "marketing", "qa"].includes(role)) return 10;
+  return 5;
+}
+
+function skillsForRole(role: AgentRole, description: string): string[] {
+  const lowered = description.toLowerCase();
+  const registryRoleSkills = Object.entries(config.skill_registry ?? {})
+    .filter(([, definition]) => definition.roles.includes(role))
+    .map(([skill]) => skill);
+  const registryTriggerSkills = Object.entries(config.skill_registry ?? {})
+    .filter(([, definition]) => definition.triggers.some((trigger) => lowered.includes(trigger.toLowerCase())))
+    .map(([skill]) => skill);
+  return Array.from(new Set([
+    ...registryRoleSkills,
+    ...roleSkillCatalog[role],
+    ...registryTriggerSkills
+  ])).slice(0, 8);
+}
+
+function mapHireRequest(input: { title: string; department?: string; description?: string; requestedRole?: string }): Omit<HiringRequest, "id" | "source" | "status" | "createdAt" | "updatedAt"> {
+  const text = [input.title, input.department, input.description, input.requestedRole].filter(Boolean).join(" ").toLowerCase();
+  const roles = Object.keys(roleSkillCatalog) as AgentRole[];
+  const scored = roles.map((role) => {
+    const direct = text.includes(role) ? 4 : 0;
+    const configuredSkillHits = roleSkillCatalog[role].filter((skill) => text.includes(skill.replaceAll("_", " "))).length;
+    const registryHits = Object.values(config.skill_registry ?? {}).filter((definition) =>
+      definition.roles.includes(role) && (
+        text.includes(definition.category.toLowerCase()) ||
+        definition.triggers.some((trigger) => text.includes(trigger.toLowerCase())) ||
+        definition.description.toLowerCase().split(/\W+/).some((word) => word.length > 5 && text.includes(word))
+      )
+    ).length;
+    return { role, score: direct + configuredSkillHits * 2 + registryHits };
+  }).sort((a, b) => b.score - a.score);
+  const best = scored[0] ?? { role: "operations" as AgentRole, score: 0 };
+  const suggestedRole = best.score > 0 ? best.role : "operations";
+  const suggestedSkills = skillsForRole(suggestedRole, text);
+  const titleId = sanitizeAgentId(input.title);
+  let suggestedAgentId = titleId;
+  let counter = 2;
+  while (agents.has(suggestedAgentId)) {
+    suggestedAgentId = `${titleId}_${counter++}`;
+  }
+  return {
+    title: input.title.trim(),
+    department: input.department?.trim() || undefined,
+    description: input.description?.trim() || undefined,
+    requestedRole: input.requestedRole?.trim() || undefined,
+    suggestedRole,
+    suggestedSkills,
+    suggestedAgentId,
+    suggestedExecutor: roleExecutor(suggestedRole),
+    suggestedModelCombo: roleModelCombo(suggestedRole),
+    suggestedBudgetUsd: roleBudget(suggestedRole),
+    confidence: Number(Math.min(0.95, 0.45 + best.score * 0.08).toFixed(2))
+  };
+}
+
+function activateHiringRequest(request: HiringRequest): Agent {
+  const agent: Agent = {
+    id: request.suggestedAgentId,
+    role: request.suggestedRole,
+    brain: "hermes",
+    memory: "persistent",
+    modelCombo: request.suggestedModelCombo,
+    executor: request.suggestedExecutor,
+    maxBudgetUsd: request.suggestedBudgetUsd,
+    status: "idle",
+    skills: request.suggestedSkills,
+    schedule: null,
+    costAccumulatedUsd: 0
+  };
+  agents.set(agent.id, agent);
+  return agent;
+}
+
+for (const request of hiringRequests.values()) {
+  if (request.status === "approved" && !agents.has(request.suggestedAgentId)) {
+    activateHiringRequest(request);
+  }
+}
 
 function inferRequiredSkills(agent: Agent, type: TaskType, description: string): string[] {
   const lowered = description.toLowerCase();
@@ -789,6 +924,7 @@ app.get("/api/state", async (_req, res) => {
     upstreams: upstreamStatus(),
     repositories: listRepositories(),
     skillRegistry: config.skill_registry ?? {},
+    hiringRequests: Array.from(hiringRequests.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     budget: {
       global: companyState.budget_usd,
       allocated: totalAgentBudget,
@@ -876,6 +1012,67 @@ app.post("/api/agents/:agentId/hire", async (req, res) => {
   addEvent(ZHEvent.AGENT_SPAWNED, `Hired ${agent.id}`);
   if (bus.connected) await bus.publish(ZHEvent.AGENT_SPAWNED, { agentId: agent.id });
   res.json(agent);
+});
+
+app.post("/api/hiring/requests", (req, res) => {
+  const { title, department, description, requestedRole, source } = (req.body ?? {}) as {
+    title?: string;
+    department?: string;
+    description?: string;
+    requestedRole?: string;
+    source?: "paperclip" | "zero-human-ui" | "api";
+  };
+  if (!title?.trim()) return res.status(400).json({ error: "title is required" });
+  const now = new Date().toISOString();
+  const mapped = mapHireRequest({ title, department, description, requestedRole });
+  const request: HiringRequest = {
+    id: `hire_${nanoid(8)}`,
+    source: source ?? "api",
+    status: "pending_approval",
+    createdAt: now,
+    updatedAt: now,
+    ...mapped
+  };
+  hiringRequests.set(request.id, request);
+  saveHiringRequests();
+  addEvent("zh:hiring:requested", `Mapped ${request.title} to ${request.suggestedRole}`);
+  res.status(201).json(request);
+});
+
+app.post("/api/hiring/requests/:requestId/approve", async (req, res) => {
+  const request = hiringRequests.get(req.params.requestId);
+  if (!request) return res.status(404).json({ error: "Hiring request not found" });
+  if (request.status !== "pending_approval") return res.status(409).json({ error: `Request is already ${request.status}` });
+  const overrides = (req.body ?? {}) as Partial<Pick<HiringRequest, "suggestedAgentId" | "suggestedRole" | "suggestedSkills" | "suggestedExecutor" | "suggestedModelCombo" | "suggestedBudgetUsd">> & { decisionNote?: string };
+  Object.assign(request, {
+    ...overrides,
+    suggestedAgentId: sanitizeAgentId(overrides.suggestedAgentId ?? request.suggestedAgentId),
+    suggestedSkills: overrides.suggestedSkills?.length ? overrides.suggestedSkills : request.suggestedSkills,
+    status: "approved" as HiringRequestStatus,
+    decidedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    decisionNote: overrides.decisionNote
+  });
+  if (agents.has(request.suggestedAgentId)) return res.status(409).json({ error: `Agent ${request.suggestedAgentId} already exists` });
+  const agent = activateHiringRequest(request);
+  saveHiringRequests();
+  addEvent("zh:hiring:approved", `Approved ${agent.id} for ${agent.role}`);
+  if (bus.connected) await bus.publish(ZHEvent.AGENT_SPAWNED, { agentId: agent.id });
+  res.json({ request, agent });
+});
+
+app.post("/api/hiring/requests/:requestId/reject", (req, res) => {
+  const request = hiringRequests.get(req.params.requestId);
+  if (!request) return res.status(404).json({ error: "Hiring request not found" });
+  if (request.status !== "pending_approval") return res.status(409).json({ error: `Request is already ${request.status}` });
+  const { decisionNote } = (req.body ?? {}) as { decisionNote?: string };
+  request.status = "rejected";
+  request.decisionNote = decisionNote;
+  request.decidedAt = new Date().toISOString();
+  request.updatedAt = new Date().toISOString();
+  saveHiringRequests();
+  addEvent("zh:hiring:rejected", `Rejected ${request.title}`);
+  res.json(request);
 });
 
 app.post("/api/agents/:agentId/resume", async (req, res) => {

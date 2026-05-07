@@ -326,6 +326,61 @@ h2 {
   color: var(--muted);
   margin-bottom: 12px;
 }
+.hireForm {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.hireForm label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.hireForm label:has(textarea),
+.hireForm button {
+  grid-column: 1 / -1;
+}
+.hiringQueue {
+  display: grid;
+  gap: 10px;
+}
+.hireCard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.75fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+}
+.hireCard span,
+.hireCard p,
+.hireMap span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.hireCard p {
+  margin: 7px 0 0;
+  overflow-wrap: anywhere;
+}
+.hireMap code {
+  display: inline-block;
+  border: 1px solid #3a403e;
+  background: #121515;
+  color: #ced2c8;
+  padding: 5px 7px;
+  border-radius: 6px;
+  margin-bottom: 7px;
+}
+.hireActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 select, textarea, input[type="range"], input[type="number"], input[type="password"], input:not([type]) {
   width: 100%;
   border: 1px solid var(--line);
@@ -692,6 +747,7 @@ textarea {
   .viewTabs button { flex: 1 1 150px; }
   .tasks { grid-column: auto; }
   .topbar { flex-direction: column; }
-  .taskRow, .repoRow, .comboRow { grid-template-columns: 1fr; }
-  .taskActions, .repoActions { justify-content: flex-start; }
+  .hireForm,
+  .taskRow, .repoRow, .comboRow, .hireCard { grid-template-columns: 1fr; }
+  .taskActions, .repoActions, .hireActions { justify-content: flex-start; }
 }

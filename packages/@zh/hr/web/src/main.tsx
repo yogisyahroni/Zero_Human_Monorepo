@@ -74,6 +74,26 @@ type RegisteredRepository = {
   error?: string;
 };
 
+type HiringRequest = {
+  id: string;
+  source: "paperclip" | "zero-human-ui" | "api";
+  title: string;
+  department?: string;
+  description?: string;
+  requestedRole?: string;
+  suggestedRole: string;
+  suggestedSkills: string[];
+  suggestedAgentId: string;
+  suggestedExecutor: string;
+  suggestedModelCombo: string;
+  suggestedBudgetUsd: number;
+  confidence: number;
+  status: "pending_approval" | "approved" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+  decisionNote?: string;
+};
+
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
   infrastructure: { redisUrl: string; worktreeBase: string };
@@ -132,6 +152,7 @@ type State = {
     version: string | null;
   }>;
   repositories: RegisteredRepository[];
+  hiringRequests: HiringRequest[];
   skillRegistry: Record<string, {
     category: string;
     description: string;
@@ -157,6 +178,7 @@ const fallbackState: State = {
   brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
   upstreams: [],
   repositories: [],
+  hiringRequests: [],
   skillRegistry: {},
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
@@ -219,6 +241,12 @@ function App() {
     sshPrivateKey: ""
   });
   const [repoError, setRepoError] = useState("");
+  const [hireDraft, setHireDraft] = useState({
+    title: "Brand Strategist",
+    department: "Marketing",
+    description: "Plan launch messaging, campaign channels, and visual handoff with design.",
+    requestedRole: ""
+  });
   const [busy, setBusy] = useState(false);
   const [diffs, setDiffs] = useState<Record<string, { status: string; diff: string }>>({});
   const [budgetDraft, setBudgetDraft] = useState<{ globalBudgetUsd: string; agentCaps: Record<string, string> }>({
@@ -259,6 +287,7 @@ function App() {
   }));
   const registryEntries = Object.entries(state.skillRegistry);
   const registryCategories = Array.from(new Set(registryEntries.map(([, skill]) => skill.category))).sort();
+  const pendingHiring = state.hiringRequests.filter((request) => request.status === "pending_approval");
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -287,6 +316,33 @@ function App() {
       body: JSON.stringify({ agentId: selectedAgent, type, description, priority, repositoryId })
     });
     setDescription("");
+    await refresh();
+    setBusy(false);
+  }
+
+  async function createHireRequest(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    await fetch("/api/hiring/requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...hireDraft, source: "zero-human-ui" })
+    });
+    setHireDraft({ title: "", department: "", description: "", requestedRole: "" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function approveHireRequest(requestId: string) {
+    setBusy(true);
+    await fetch(`/api/hiring/requests/${requestId}/approve`, { method: "POST" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function rejectHireRequest(requestId: string) {
+    setBusy(true);
+    await fetch(`/api/hiring/requests/${requestId}/reject`, { method: "POST" });
     await refresh();
     setBusy(false);
   }
@@ -479,6 +535,77 @@ function App() {
                         Resume
                       </button>
                     )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {activeView === "agents" && (
+          <div className="panel hiring">
+            <div className="panelHead">
+              <div>
+                <h2>Hiring approvals</h2>
+                <p>Paperclip hire intake is mapped first, then activated after approval.</p>
+              </div>
+              <Users size={20} />
+            </div>
+            <form className="hireForm" onSubmit={createHireRequest}>
+              <label>
+                Title
+                <input
+                  value={hireDraft.title}
+                  placeholder="Brand Strategist"
+                  onChange={(event) => setHireDraft((current) => ({ ...current, title: event.target.value }))}
+                />
+              </label>
+              <label>
+                Department
+                <input
+                  value={hireDraft.department}
+                  placeholder="Marketing"
+                  onChange={(event) => setHireDraft((current) => ({ ...current, department: event.target.value }))}
+                />
+              </label>
+              <label>
+                Requested role
+                <input
+                  value={hireDraft.requestedRole}
+                  placeholder="Optional Paperclip role"
+                  onChange={(event) => setHireDraft((current) => ({ ...current, requestedRole: event.target.value }))}
+                />
+              </label>
+              <label>
+                Hiring brief
+                <textarea
+                  value={hireDraft.description}
+                  onChange={(event) => setHireDraft((current) => ({ ...current, description: event.target.value }))}
+                />
+              </label>
+              <button disabled={busy || !hireDraft.title.trim()}>
+                <Plus size={15} /> Request hire
+              </button>
+            </form>
+            <div className="hiringQueue">
+              {pendingHiring.length === 0 && <div className="empty">No pending hires. Paperclip requests will wait here for approval.</div>}
+              {pendingHiring.map((request) => (
+                <article className="hireCard" key={request.id}>
+                  <div>
+                    <strong>{request.title}</strong>
+                    <span>{request.source} · {request.department ?? "unassigned"} · {Math.round(request.confidence * 100)}% match</span>
+                    <p>{request.description}</p>
+                  </div>
+                  <div className="hireMap">
+                    <code>{request.suggestedAgentId}</code>
+                    <span>{request.suggestedRole} · {request.suggestedExecutor} · {money(request.suggestedBudgetUsd)}</span>
+                    <div className="skillRow">
+                      {request.suggestedSkills.slice(0, 5).map((skill) => <span key={skill}>{skill}</span>)}
+                    </div>
+                  </div>
+                  <div className="hireActions">
+                    <button onClick={() => rejectHireRequest(request.id)} disabled={busy}>Reject</button>
+                    <button onClick={() => approveHireRequest(request.id)} disabled={busy}><Check size={15} /> Approve</button>
                   </div>
                 </article>
               ))}
