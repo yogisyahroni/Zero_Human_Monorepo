@@ -276,7 +276,7 @@ h2 {
   color: var(--muted);
   margin-bottom: 12px;
 }
-select, textarea, input[type="range"], input[type="number"], input:not([type]) {
+select, textarea, input[type="range"], input[type="number"], input[type="password"], input:not([type]) {
   width: 100%;
   border: 1px solid var(--line);
   color: var(--ink);
@@ -372,6 +372,11 @@ textarea {
   color: var(--danger);
   margin-top: 7px;
   overflow-wrap: anywhere;
+}
+.secretBox {
+  min-height: 104px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
 }
 .budgetGauge {
   height: 12px;

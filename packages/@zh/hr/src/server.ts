@@ -76,12 +76,18 @@ type RegisteredRepository = {
   url: string;
   branch: string;
   path: string;
+  authType?: "none" | "https-token" | "ssh-key";
+  username?: string;
+  token?: string;
+  sshPrivateKey?: string;
+  sshPassphrase?: string;
   status: "ready" | "syncing" | "error";
   createdAt: string;
   updatedAt: string;
   lastSyncAt?: string;
   error?: string;
 };
+type PublicRepository = Omit<RegisteredRepository, "token" | "sshPrivateKey" | "sshPassphrase">;
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
@@ -147,8 +153,13 @@ function saveRepositories(): void {
   fs.writeFileSync(repositoriesPath, JSON.stringify(Array.from(repositories.values()), null, 2));
 }
 
-function listRepositories(): RegisteredRepository[] {
-  return [defaultRepository(), ...Array.from(repositories.values()).sort((a, b) => a.name.localeCompare(b.name))];
+function publicRepository(repository: RegisteredRepository): PublicRepository {
+  const { token: _token, sshPrivateKey: _sshPrivateKey, sshPassphrase: _sshPassphrase, ...safeRepository } = repository;
+  return safeRepository;
+}
+
+function listRepositories(): PublicRepository[] {
+  return [defaultRepository(), ...Array.from(repositories.values()).sort((a, b) => a.name.localeCompare(b.name))].map(publicRepository);
 }
 
 function getRepository(repositoryId?: string): RegisteredRepository {
@@ -218,9 +229,50 @@ function resolveWorktreePath(agentId: string, taskId: string): string {
   return path.join(base, agentId, taskId);
 }
 
-async function runGit(args: string[], cwd = sourceRepoPath): Promise<string> {
+function makeAskPassScript(repository: RegisteredRepository): string | null {
+  if (repository.authType !== "https-token" || !repository.token) return null;
+  const scriptPath = path.join(stateDir, "tmp", `askpass-${repository.id}-${nanoid(6)}.sh`);
+  const username = JSON.stringify(repository.username?.trim() || "x-access-token");
+  const token = JSON.stringify(repository.token);
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.writeFileSync(scriptPath, `#!/bin/sh\ncase "$1" in\n*Username*) printf %s ${username} ;;\n*Password*) printf %s ${token} ;;\n*) printf %s ${token} ;;\nesac\n`, "utf8");
+  fs.chmodSync(scriptPath, 0o700);
+  return scriptPath;
+}
+
+function makeSshKeyFile(repository: RegisteredRepository): string | null {
+  if (repository.authType !== "ssh-key" || !repository.sshPrivateKey) return null;
+  const keyPath = path.join(stateDir, "tmp", `ssh-${repository.id}-${nanoid(6)}`);
+  fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+  fs.writeFileSync(keyPath, `${repository.sshPrivateKey.trim()}\n`, "utf8");
+  fs.chmodSync(keyPath, 0o600);
+  return keyPath;
+}
+
+async function withRepositoryGitEnv<T>(repository: RegisteredRepository, fn: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
+  const askPassPath = makeAskPassScript(repository);
+  const sshKeyPath = makeSshKeyFile(repository);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: "0"
+  };
+  if (askPassPath) env.GIT_ASKPASS = askPassPath;
+  if (sshKeyPath) {
+    const passphraseNote = repository.sshPassphrase ? " -o BatchMode=no" : "";
+    env.GIT_SSH_COMMAND = `ssh -i "${sshKeyPath}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new${passphraseNote}`;
+  }
+  try {
+    return await fn(env);
+  } finally {
+    if (askPassPath) fs.rmSync(askPassPath, { force: true });
+    if (sshKeyPath) fs.rmSync(sshKeyPath, { force: true });
+  }
+}
+
+async function runGit(args: string[], cwd = sourceRepoPath, env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const { stdout, stderr } = await execFileAsync("git", args, {
     cwd,
+    env,
     windowsHide: true,
     maxBuffer: 10 * 1024 * 1024
   });
@@ -229,8 +281,10 @@ async function runGit(args: string[], cwd = sourceRepoPath): Promise<string> {
 
 async function ensureSourceRepo(repository = defaultRepository()): Promise<void> {
   if (fs.existsSync(path.join(repository.path, ".git"))) {
-    await runGit(["fetch", "origin"], repository.path).catch(() => "");
-    await runGit(["reset", "--hard", `origin/${repository.branch}`], repository.path).catch(() => "");
+    await withRepositoryGitEnv(repository, async (env) => {
+      await runGit(["fetch", "origin"], repository.path, env).catch(() => "");
+      await runGit(["reset", "--hard", `origin/${repository.branch}`], repository.path, env).catch(() => "");
+    });
     await runGit(["config", "user.email", "zero-human@example.local"], repository.path);
     await runGit(["config", "user.name", "Zero-Human"], repository.path);
     return;
@@ -245,9 +299,12 @@ async function ensureSourceRepo(repository = defaultRepository()): Promise<void>
   }
 
   fs.mkdirSync(path.dirname(repository.path), { recursive: true });
-  await execFileAsync("git", ["clone", repository.url, repository.path], {
-    windowsHide: true,
-    maxBuffer: 1024 * 1024
+  await withRepositoryGitEnv(repository, async (env) => {
+    await execFileAsync("git", ["clone", repository.url, repository.path], {
+      env,
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024
+    });
   });
   await runGit(["config", "user.email", "zero-human@example.local"], repository.path);
   await runGit(["config", "user.name", "Zero-Human"], repository.path);
@@ -260,16 +317,19 @@ async function syncRegisteredRepository(repository: RegisteredRepository): Promi
   saveRepositories();
   try {
     fs.mkdirSync(path.dirname(repository.path), { recursive: true });
-    if (fs.existsSync(path.join(repository.path, ".git"))) {
-      await runGit(["fetch", "origin"], repository.path);
-      await runGit(["checkout", repository.branch], repository.path).catch(() => runGit(["checkout", "-B", repository.branch, `origin/${repository.branch}`], repository.path));
-      await runGit(["pull", "--ff-only", "origin", repository.branch], repository.path);
-    } else {
-      await execFileAsync("git", ["clone", "--branch", repository.branch, repository.url, repository.path], {
-        windowsHide: true,
-        maxBuffer: 10 * 1024 * 1024
-      });
-    }
+    await withRepositoryGitEnv(repository, async (env) => {
+      if (fs.existsSync(path.join(repository.path, ".git"))) {
+        await runGit(["fetch", "origin"], repository.path, env);
+        await runGit(["checkout", repository.branch], repository.path, env).catch(() => runGit(["checkout", "-B", repository.branch, `origin/${repository.branch}`], repository.path, env));
+        await runGit(["pull", "--ff-only", "origin", repository.branch], repository.path, env);
+      } else {
+        await execFileAsync("git", ["clone", "--branch", repository.branch, repository.url, repository.path], {
+          env,
+          windowsHide: true,
+          maxBuffer: 10 * 1024 * 1024
+        });
+      }
+    });
     await runGit(["config", "user.email", "zero-human@example.local"], repository.path);
     await runGit(["config", "user.name", "Zero-Human"], repository.path);
     repository.status = "ready";
@@ -670,12 +730,27 @@ app.get("/api/state", async (_req, res) => {
 });
 
 app.post("/api/repositories", async (req, res) => {
-  const { name, url, branch } = (req.body ?? {}) as { name?: string; url?: string; branch?: string };
+  const { name, url, branch, authType, username, token, sshPrivateKey } = (req.body ?? {}) as {
+    name?: string;
+    url?: string;
+    branch?: string;
+    authType?: "none" | "https-token" | "ssh-key";
+    username?: string;
+    token?: string;
+    sshPrivateKey?: string;
+  };
   const repoUrl = url?.trim() ?? "";
   const repoName = name?.trim() || repoUrl.split(/[\/:]/).pop()?.replace(/\.git$/, "") || "Repository";
   const repoBranch = branch?.trim() || "main";
+  const repoAuthType = authType ?? "none";
   if (!isCloneableRepositoryUrl(repoUrl)) {
     return res.status(400).json({ error: "Repository URL must be a Git URL, for example https://github.com/org/repo.git" });
+  }
+  if (repoAuthType === "https-token" && !token?.trim()) {
+    return res.status(400).json({ error: "HTTPS token auth requires a token" });
+  }
+  if (repoAuthType === "ssh-key" && !sshPrivateKey?.includes("PRIVATE KEY")) {
+    return res.status(400).json({ error: "SSH key auth requires a private key" });
   }
 
   const baseId = sanitizeRepositoryId(repoName);
@@ -692,6 +767,10 @@ app.post("/api/repositories", async (req, res) => {
     url: repoUrl,
     branch: repoBranch,
     path: path.join(repositoryBasePath, id),
+    authType: repoAuthType,
+    username: username?.trim() || undefined,
+    token: repoAuthType === "https-token" ? token : undefined,
+    sshPrivateKey: repoAuthType === "ssh-key" ? sshPrivateKey : undefined,
     status: "syncing",
     createdAt: now,
     updatedAt: now
@@ -699,9 +778,9 @@ app.post("/api/repositories", async (req, res) => {
   repositories.set(repository.id, repository);
   saveRepositories();
   const synced = await syncRegisteredRepository(repository);
-  if (synced.status === "error") return res.status(502).json(synced);
+  if (synced.status === "error") return res.status(502).json(publicRepository(synced));
   addEvent("zh:repository:registered", `Registered ${synced.name}`);
-  res.status(201).json(synced);
+  res.status(201).json(publicRepository(synced));
 });
 
 app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
@@ -709,12 +788,12 @@ app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
     const repository = getRepository(req.params.repositoryId);
     if (repository.id === "default") {
       await ensureSourceRepo(repository);
-      return res.json(repository);
+      return res.json(publicRepository(repository));
     }
     const synced = await syncRegisteredRepository(repository);
-    if (synced.status === "error") return res.status(502).json(synced);
+    if (synced.status === "error") return res.status(502).json(publicRepository(synced));
     addEvent("zh:repository:synced", `Synced ${synced.name}`);
-    res.json(synced);
+    res.json(publicRepository(synced));
   } catch (error) {
     res.status(404).json({ error: (error as Error).message });
   }

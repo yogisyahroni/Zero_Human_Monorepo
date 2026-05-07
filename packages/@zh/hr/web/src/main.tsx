@@ -61,6 +61,8 @@ type RegisteredRepository = {
   url: string;
   branch: string;
   path: string;
+  authType?: "none" | "https-token" | "ssh-key";
+  username?: string;
   status: "ready" | "syncing" | "error";
   createdAt: string;
   updatedAt: string;
@@ -159,7 +161,15 @@ function App() {
   const [type, setType] = useState("architecture");
   const [priority, setPriority] = useState<1 | 2 | 3>(2);
   const [repositoryId, setRepositoryId] = useState("default");
-  const [repoDraft, setRepoDraft] = useState({ name: "", url: "", branch: "main" });
+  const [repoDraft, setRepoDraft] = useState({
+    name: "",
+    url: "",
+    branch: "main",
+    authType: "none" as "none" | "https-token" | "ssh-key",
+    username: "",
+    token: "",
+    sshPrivateKey: ""
+  });
   const [repoError, setRepoError] = useState("");
   const [busy, setBusy] = useState(false);
   const [diffs, setDiffs] = useState<Record<string, { status: string; diff: string }>>({});
@@ -240,7 +250,7 @@ function App() {
       setRepoError(body.error ?? body.error ?? "Failed to register repository");
     } else {
       setRepositoryId(body.id);
-      setRepoDraft({ name: "", url: "", branch: "main" });
+      setRepoDraft({ name: "", url: "", branch: "main", authType: "none", username: "", token: "", sshPrivateKey: "" });
     }
     await refresh();
     setBusy(false);
@@ -468,6 +478,49 @@ function App() {
                   onChange={(event) => setRepoDraft((current) => ({ ...current, branch: event.target.value }))}
                 />
               </label>
+              <label>
+                Auth
+                <select
+                  value={repoDraft.authType}
+                  onChange={(event) => setRepoDraft((current) => ({ ...current, authType: event.target.value as typeof repoDraft.authType }))}
+                >
+                  <option value="none">Public / no auth</option>
+                  <option value="https-token">HTTPS token</option>
+                  <option value="ssh-key">SSH private key</option>
+                </select>
+              </label>
+              {repoDraft.authType === "https-token" && (
+                <>
+                  <label>
+                    Username
+                    <input
+                      value={repoDraft.username}
+                      placeholder="x-access-token"
+                      onChange={(event) => setRepoDraft((current) => ({ ...current, username: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Token
+                    <input
+                      type="password"
+                      value={repoDraft.token}
+                      placeholder="GitHub PAT or GitLab token"
+                      onChange={(event) => setRepoDraft((current) => ({ ...current, token: event.target.value }))}
+                    />
+                  </label>
+                </>
+              )}
+              {repoDraft.authType === "ssh-key" && (
+                <label>
+                  SSH private key
+                  <textarea
+                    className="secretBox"
+                    value={repoDraft.sshPrivateKey}
+                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                    onChange={(event) => setRepoDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
+                  />
+                </label>
+              )}
               <button disabled={busy || !repoDraft.url.trim()}>
                 <Plus size={15} /> Add repo
               </button>
@@ -478,7 +531,7 @@ function App() {
                 <article className="repoRow" key={repo.id}>
                   <div>
                     <strong>{repo.name}</strong>
-                    <span>{repo.branch} · {repo.url}</span>
+                    <span>{repo.branch} · {repo.authType ?? "none"} · {repo.url}</span>
                     <small className="monoPath">{repo.path}</small>
                     {repo.error && <small className="repoError">{repo.error}</small>}
                   </div>
