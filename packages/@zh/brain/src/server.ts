@@ -53,6 +53,36 @@ const persisted: PersistedMemory = loadMemory();
 app.use(cors());
 app.use(express.json());
 
+function hermesMemoryContractStatus(): {
+  mode: "json-fallback" | "native-contract-detected";
+  stableApi: boolean;
+  providerInterface: boolean;
+  managerInterface: boolean;
+  bundledProviders: string[];
+  note: string;
+} {
+  const upstreamRoot = path.join(repoRoot, "packages/@zh/brain/upstream");
+  const providerInterface = fsSync.existsSync(path.join(upstreamRoot, "agent/memory_provider.py"));
+  const managerInterface = fsSync.existsSync(path.join(upstreamRoot, "agent/memory_manager.py"));
+  const pluginsDir = path.join(upstreamRoot, "plugins/memory");
+  const bundledProviders = fsSync.existsSync(pluginsDir)
+    ? fsSync.readdirSync(pluginsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_") && fsSync.existsSync(path.join(pluginsDir, entry.name, "__init__.py")))
+      .map((entry) => entry.name)
+    : [];
+  const contractDetected = providerInterface && managerInterface;
+  return {
+    mode: contractDetected ? "native-contract-detected" : "json-fallback",
+    stableApi: false,
+    providerInterface,
+    managerInterface,
+    bundledProviders,
+    note: contractDetected
+      ? "Hermes exposes an in-process MemoryProvider contract, but no stable HTTP/task memory API is available to replace the adapter JSON store yet."
+      : "Hermes native memory contract was not found; Brain is using its JSON fallback store."
+  };
+}
+
 function loadMemory(): PersistedMemory {
   try {
     if (!fsSync.existsSync(memoryPath)) return { notes: {}, outcomes: [], skills: {} };
@@ -459,6 +489,7 @@ app.get("/health", (_req, res) => {
     agents: agents.size,
     routerUrl,
     hermesUrl,
+    memoryContract: hermesMemoryContractStatus(),
     upstream: upstreamSources.find((source) => source.name === "brain")
   });
 });
@@ -467,7 +498,8 @@ app.get("/api/memory", (_req, res) => {
   res.json({
     notes: persisted.notes,
     outcomes: persisted.outcomes,
-    skills: Object.values(persisted.skills)
+    skills: Object.values(persisted.skills),
+    native: hermesMemoryContractStatus()
   });
 });
 
