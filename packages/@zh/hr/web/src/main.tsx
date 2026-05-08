@@ -6,19 +6,23 @@ import {
   Brain,
   Check,
   CircuitBoard,
+  Download,
   FolderGit2,
   Gauge,
   GitBranch,
+  PackageSearch,
   Play,
   Plus,
   RadioTower,
   RefreshCw,
+  Save,
   ShieldCheck,
+  TerminalSquare,
   Users
 } from "lucide-react";
 import "./styles.css";
 
-type ViewId = "operations" | "agents" | "memory" | "gateway";
+type ViewId = "operations" | "agents" | "memory" | "gateway" | "mcp";
 
 type Agent = {
   id: string;
@@ -106,6 +110,37 @@ type SkillImportReport = {
   createdAt: string;
 };
 
+type McpServerConfig = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  transport: "stdio" | "http" | "sse";
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  roles: string[];
+  permissions: {
+    mode: "read-only" | "write" | "approval-required";
+    requiresApproval: string[];
+  };
+  status: "available" | "installed" | "enabled" | "disabled" | "error";
+  packageName?: string;
+  homepage?: string;
+  tags?: string[];
+  installedAt?: string;
+  updatedAt?: string;
+  lastTestAt?: string;
+  lastTestStatus?: "passed" | "failed";
+  error?: string;
+};
+type McpMarketplaceItem = Omit<McpServerConfig, "status" | "installedAt" | "updatedAt" | "lastTestAt" | "lastTestStatus" | "error"> & {
+  packageName?: string;
+  homepage?: string;
+  tags: string[];
+};
+
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
   infrastructure: { redisUrl: string; worktreeBase: string };
@@ -164,6 +199,8 @@ type State = {
     version: string | null;
   }>;
   repositories: RegisteredRepository[];
+  mcpMarketplace: McpMarketplaceItem[];
+  mcpServers: McpServerConfig[];
   hiringRequests: HiringRequest[];
   skillImports: SkillImportReport[];
   skillRegistry: Record<string, {
@@ -197,6 +234,8 @@ const fallbackState: State = {
   brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
   upstreams: [],
   repositories: [],
+  mcpMarketplace: [],
+  mcpServers: [],
   hiringRequests: [],
   skillImports: [],
   skillRegistry: {},
@@ -240,6 +279,14 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
     title: "9Router gateway",
     description: "Manage repository intake, inspect service health, upstream code, and model combo routing.",
     icon: <RadioTower size={19} />
+  },
+  {
+    id: "mcp",
+    label: "MCP",
+    eyebrow: "Tool marketplace",
+    title: "MCP control plane",
+    description: "Install Model Context Protocol servers, manage JSON config, and assign tools to company roles.",
+    icon: <PackageSearch size={19} />
   }
 ];
 
@@ -276,6 +323,11 @@ function App() {
   const [skillImportDraft, setSkillImportDraft] = useState({ repositoryId: "default", path: "" });
   const [skillImportError, setSkillImportError] = useState("");
   const [latestSkillImport, setLatestSkillImport] = useState<SkillImportReport | null>(null);
+  const [mcpQuery, setMcpQuery] = useState("");
+  const [selectedMcpId, setSelectedMcpId] = useState("");
+  const [mcpJsonDraft, setMcpJsonDraft] = useState("");
+  const [mcpError, setMcpError] = useState("");
+  const [mcpMessage, setMcpMessage] = useState("");
   const [hireDraft, setHireDraft] = useState({
     title: "Brand Strategist",
     department: "Marketing",
@@ -325,6 +377,12 @@ function App() {
   const pendingHiring = state.hiringRequests.filter((request) => request.status === "pending_approval");
   const workRepositories = state.repositories.filter((repo) => (repo.sourceKind ?? "work") === "work");
   const skillSourceRepositories = state.repositories.filter((repo) => repo.sourceKind === "skill_source");
+  const installedMcpIds = new Set(state.mcpServers.map((server) => server.id));
+  const selectedMcp = state.mcpServers.find((server) => server.id === selectedMcpId) ?? state.mcpServers[0];
+  const filteredMarketplace = state.mcpMarketplace.filter((item) => {
+    const haystack = [item.name, item.description, item.category, ...(item.tags ?? []), item.packageName].join(" ").toLowerCase();
+    return haystack.includes(mcpQuery.toLowerCase());
+  });
 
   useEffect(() => {
     if (!workRepositories.some((repo) => repo.id === repositoryId)) {
@@ -337,6 +395,18 @@ function App() {
       setSkillImportDraft((current) => ({ ...current, repositoryId: skillSourceRepositories[0]?.id ?? "" }));
     }
   }, [skillImportDraft.repositoryId, skillSourceRepositories]);
+
+  useEffect(() => {
+    if (!selectedMcpId && state.mcpServers.length > 0) {
+      setSelectedMcpId(state.mcpServers[0].id);
+    }
+  }, [selectedMcpId, state.mcpServers]);
+
+  useEffect(() => {
+    if (selectedMcp) {
+      setMcpJsonDraft(JSON.stringify(selectedMcp, null, 2));
+    }
+  }, [selectedMcp?.id, selectedMcp?.updatedAt, selectedMcp?.status, selectedMcp?.lastTestAt]);
 
   async function hire(agentId: string) {
     setBusy(true);
@@ -458,6 +528,85 @@ function App() {
       setSkillImportError(body.error ?? "Failed to import skills");
     } else {
       setLatestSkillImport(body);
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function installMcp(marketplaceId: string) {
+    setBusy(true);
+    setMcpError("");
+    setMcpMessage("");
+    const response = await fetch("/api/mcp/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ marketplaceId })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setMcpError(body.error ?? "Failed to install MCP");
+    } else {
+      setSelectedMcpId(body.id);
+      setMcpMessage(`${body.name} installed. Fill secrets, enable it, then test.`);
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function saveMcpJson() {
+    if (!selectedMcp) return;
+    setBusy(true);
+    setMcpError("");
+    setMcpMessage("");
+    try {
+      const parsed = JSON.parse(mcpJsonDraft) as McpServerConfig;
+      const response = await fetch(`/api/mcp/${selectedMcp.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsed)
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setMcpError(body.error ?? "Failed to save MCP JSON");
+      } else {
+        setMcpMessage(`${body.name} saved.`);
+      }
+    } catch (error) {
+      setMcpError(`Invalid JSON: ${(error as Error).message}`);
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function updateMcpStatus(server: McpServerConfig, status: McpServerConfig["status"]) {
+    setBusy(true);
+    setMcpError("");
+    setMcpMessage("");
+    const response = await fetch(`/api/mcp/${server.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...server, status })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setMcpError(body.error ?? "Failed to update MCP");
+    } else {
+      setMcpMessage(`${body.name} is ${body.status}.`);
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function testMcp(serverId: string) {
+    setBusy(true);
+    setMcpError("");
+    setMcpMessage("");
+    const response = await fetch(`/api/mcp/${serverId}/test`, { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setMcpError(body.message ?? body.error ?? body.error ?? "MCP test failed");
+    } else {
+      setMcpMessage(body.message ?? "MCP test passed.");
     }
     await refresh();
     setBusy(false);
@@ -1163,6 +1312,131 @@ function App() {
                   <span>{item.note}</span>
                 </article>
               ))}
+            </div>
+          </div>
+          )}
+
+          {activeView === "mcp" && (
+          <div className="panel mcpMarketplace">
+            <div className="panelHead">
+              <div>
+                <h2>MCP marketplace</h2>
+                <p>Find installable Model Context Protocol servers for company divisions.</p>
+              </div>
+              <PackageSearch size={20} />
+            </div>
+            <label className="mcpSearch">
+              Search marketplace
+              <input
+                value={mcpQuery}
+                placeholder="github, figma, database, browser"
+                onChange={(event) => setMcpQuery(event.target.value)}
+              />
+            </label>
+            <div className="mcpCards">
+              {filteredMarketplace.map((item) => (
+                <article className="mcpCard" key={item.id}>
+                  <div>
+                    <strong>{item.name}</strong>
+                    <span>{item.category} · {item.transport} · {item.packageName ?? item.url}</span>
+                  </div>
+                  <p>{item.description}</p>
+                  <div className="triggerRow">
+                    {(item.tags ?? []).slice(0, 5).map((tag) => <code key={tag}>{tag}</code>)}
+                  </div>
+                  <div className="mcpCardFooter">
+                    <Status value={installedMcpIds.has(item.id) ? "installed" : "available"} />
+                    <button onClick={() => installMcp(item.id)} disabled={busy}>
+                      <Download size={15} /> {installedMcpIds.has(item.id) ? "Reinstall" : "Install"}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {activeView === "mcp" && (
+          <div className="panel mcpManager">
+            <div className="panelHead">
+              <div>
+                <h2>Manage MCP</h2>
+                <p>Installed servers are stored as editable JSON and mapped to agent roles.</p>
+              </div>
+              <TerminalSquare size={20} />
+            </div>
+            {state.mcpServers.length === 0 && <div className="empty">Install an MCP from the marketplace to manage its JSON config.</div>}
+            {state.mcpServers.length > 0 && (
+              <>
+                <label className="mcpSearch">
+                  Installed server
+                  <select value={selectedMcp?.id ?? ""} onChange={(event) => setSelectedMcpId(event.target.value)}>
+                    {state.mcpServers.map((server) => (
+                      <option value={server.id} key={server.id}>{server.name} · {server.status}</option>
+                    ))}
+                  </select>
+                </label>
+                {selectedMcp && (
+                  <>
+                    <div className="mcpSummary">
+                      <div>
+                        <strong>{selectedMcp.name}</strong>
+                        <span>{selectedMcp.transport} · {selectedMcp.permissions.mode} · {selectedMcp.roles.join(", ")}</span>
+                        {selectedMcp.error && <small className="repoError">{selectedMcp.error}</small>}
+                      </div>
+                      <Status value={selectedMcp.lastTestStatus ?? selectedMcp.status} />
+                    </div>
+                    <textarea
+                      className="jsonEditor"
+                      value={mcpJsonDraft}
+                      spellCheck={false}
+                      onChange={(event) => setMcpJsonDraft(event.target.value)}
+                    />
+                    <div className="mcpActions">
+                      <button onClick={saveMcpJson} disabled={busy}>
+                        <Save size={15} /> Save JSON
+                      </button>
+                      <button onClick={() => testMcp(selectedMcp.id)} disabled={busy}>
+                        <Check size={15} /> Test
+                      </button>
+                      <button onClick={() => updateMcpStatus(selectedMcp, selectedMcp.status === "enabled" ? "disabled" : "enabled")} disabled={busy}>
+                        {selectedMcp.status === "enabled" ? "Disable" : "Enable"}
+                      </button>
+                    </div>
+                    {mcpError && <p className="formWarning">{mcpError}</p>}
+                    {mcpMessage && <p className="formSuccess">{mcpMessage}</p>}
+                  </>
+                )}
+              </>
+            )}
+          </div>
+          )}
+
+          {activeView === "mcp" && (
+          <div className="panel mcpRoleMap">
+            <div className="panelHead">
+              <div>
+                <h2>Role tool map</h2>
+                <p>Enabled MCP servers are injected into task guidance only for assigned roles.</p>
+              </div>
+              <Users size={20} />
+            </div>
+            <div className="roleToolGrid">
+              {state.agents.map((agent) => {
+                const tools = state.mcpServers.filter((server) => server.status === "enabled" && server.roles.includes(agent.role));
+                return (
+                  <article className="roleToolCard" key={agent.id}>
+                    <div>
+                      <strong>{agent.id.replaceAll("_", " ")}</strong>
+                      <span>{agent.role} · {tools.length} MCP tool{tools.length === 1 ? "" : "s"}</span>
+                    </div>
+                    <div className="skillRow">
+                      {tools.length === 0 && <span>no mcp assigned</span>}
+                      {tools.map((server) => <span key={server.id}>{server.name}</span>)}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </div>
           )}

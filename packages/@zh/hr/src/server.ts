@@ -50,6 +50,7 @@ const budgetOverridesPath = path.join(stateDir, "budget-overrides.json");
 const repositoriesPath = path.join(stateDir, "repositories.json");
 const hiringRequestsPath = path.join(stateDir, "hiring-requests.json");
 const customSkillsPath = path.join(stateDir, "custom-skills.json");
+const mcpRegistryPath = path.join(stateDir, "mcp-servers.json");
 type ServiceHealth = {
   name: string;
   url: string;
@@ -123,6 +124,35 @@ type HiringRequest = {
   updatedAt: string;
   decidedAt?: string;
   decisionNote?: string;
+};
+type McpTransport = "stdio" | "http" | "sse";
+type McpPermissionMode = "read-only" | "write" | "approval-required";
+type McpServerConfig = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  transport: McpTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  roles: AgentRole[];
+  permissions: {
+    mode: McpPermissionMode;
+    requiresApproval: string[];
+  };
+  status: "available" | "installed" | "enabled" | "disabled" | "error";
+  installedAt?: string;
+  updatedAt?: string;
+  lastTestAt?: string;
+  lastTestStatus?: "passed" | "failed";
+  error?: string;
+};
+type McpMarketplaceItem = Omit<McpServerConfig, "status" | "installedAt" | "updatedAt" | "lastTestAt" | "lastTestStatus" | "error"> & {
+  packageName?: string;
+  homepage?: string;
+  tags: string[];
 };
 
 function addEvent(event: string, summary: string): void {
@@ -343,6 +373,138 @@ const skillRoleRules: Array<[RegExp, AgentRole[]]> = [
   [/research|search|crawl|scrape|analysis|paper|data/, ["research", "product", "marketing"]],
   [/support|docs|ticket|feedback/, ["support", "operations", "product"]]
 ];
+
+const mcpMarketplace: McpMarketplaceItem[] = [
+  {
+    id: "github",
+    name: "GitHub MCP",
+    description: "Repository, issue, pull request, and code review tools for engineering agents.",
+    category: "coding",
+    packageName: "@modelcontextprotocol/server-github",
+    homepage: "https://github.com/modelcontextprotocol/servers",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-github"],
+    env: { GITHUB_PERSONAL_ACCESS_TOKEN: "${secret:GITHUB_TOKEN}" },
+    roles: ["cto", "backend", "frontend", "qa", "devops", "product"],
+    permissions: { mode: "approval-required", requiresApproval: ["delete", "merge", "release"] },
+    tags: ["repo", "issues", "pull-request", "code"]
+  },
+  {
+    id: "filesystem",
+    name: "Filesystem MCP",
+    description: "Controlled file read/write access for local workspace automation.",
+    category: "coding",
+    packageName: "@modelcontextprotocol/server-filesystem",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/app/repositories"],
+    env: {},
+    roles: ["cto", "backend", "frontend", "qa", "devops", "design"],
+    permissions: { mode: "approval-required", requiresApproval: ["write", "delete"] },
+    tags: ["files", "workspace", "local"]
+  },
+  {
+    id: "postgres",
+    name: "Postgres MCP",
+    description: "Database inspection and query execution for backend, analytics, and finance roles.",
+    category: "database",
+    packageName: "@modelcontextprotocol/server-postgres",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-postgres", "${secret:POSTGRES_URL}"],
+    env: {},
+    roles: ["backend", "devops", "finance", "operations"],
+    permissions: { mode: "approval-required", requiresApproval: ["write", "migration", "delete"] },
+    tags: ["database", "sql", "analytics"]
+  },
+  {
+    id: "figma",
+    name: "Figma MCP",
+    description: "Design file context, components, tokens, and handoff data for product design work.",
+    category: "design",
+    packageName: "figma-developer-mcp",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "figma-developer-mcp"],
+    env: { FIGMA_API_KEY: "${secret:FIGMA_API_KEY}" },
+    roles: ["design", "frontend", "product", "marketing"],
+    permissions: { mode: "read-only", requiresApproval: [] },
+    tags: ["design", "handoff", "tokens"]
+  },
+  {
+    id: "browser",
+    name: "Browser MCP",
+    description: "Browser automation for QA validation, research, and UI smoke checks.",
+    category: "automation",
+    packageName: "@playwright/mcp",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@playwright/mcp"],
+    env: {},
+    roles: ["qa", "frontend", "product", "marketing", "research"],
+    permissions: { mode: "approval-required", requiresApproval: ["form-submit", "purchase", "login"] },
+    tags: ["browser", "qa", "research"]
+  },
+  {
+    id: "slack",
+    name: "Slack MCP",
+    description: "Team communication, channel search, and stakeholder updates for backoffice agents.",
+    category: "backoffice",
+    packageName: "@modelcontextprotocol/server-slack",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-slack"],
+    env: { SLACK_BOT_TOKEN: "${secret:SLACK_BOT_TOKEN}", SLACK_TEAM_ID: "${secret:SLACK_TEAM_ID}" },
+    roles: ["operations", "support", "marketing", "sales", "product"],
+    permissions: { mode: "approval-required", requiresApproval: ["send-message", "invite", "archive"] },
+    tags: ["chat", "support", "ops"]
+  }
+];
+
+function loadMcpServers(): Map<string, McpServerConfig> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(mcpRegistryPath, "utf8")) as McpServerConfig[];
+    return new Map(raw.map((server) => [server.id, server]));
+  } catch {
+    return new Map();
+  }
+}
+
+const mcpServers = loadMcpServers();
+
+function saveMcpServers(): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(mcpRegistryPath, JSON.stringify(Array.from(mcpServers.values()), null, 2));
+}
+
+function publicMcpServers(): McpServerConfig[] {
+  return Array.from(mcpServers.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function validateMcpConfig(server: McpServerConfig): void {
+  if (!server.id?.trim() || !/^[a-z0-9._-]+$/.test(server.id)) throw new Error("MCP id must use lowercase letters, numbers, dot, underscore, or dash");
+  if (!server.name?.trim()) throw new Error("MCP name is required");
+  if (!["stdio", "http", "sse"].includes(server.transport)) throw new Error("MCP transport must be stdio, http, or sse");
+  if (server.transport === "stdio" && !server.command?.trim()) throw new Error("stdio MCP requires a command");
+  if (server.transport !== "stdio" && !server.url?.trim()) throw new Error("http/sse MCP requires a URL");
+  if (!Array.isArray(server.roles) || server.roles.length === 0) throw new Error("MCP must be assigned to at least one role");
+  for (const role of server.roles) {
+    if (!(role in roleSkillCatalog)) throw new Error(`Unknown role: ${role}`);
+  }
+}
+
+function mcpManifestForAgent(agent: Agent): string {
+  const enabled = publicMcpServers().filter((server) => server.status === "enabled" && server.roles.includes(agent.role));
+  if (enabled.length === 0) return "MCP tools: none assigned.";
+  const rows = enabled.map((server) => {
+    const toolRef = server.transport === "stdio"
+      ? `${server.command} ${(server.args ?? []).join(" ")}`.trim()
+      : server.url ?? "";
+    return `- ${server.name} (${server.category}, ${server.permissions.mode}): ${toolRef}`;
+  });
+  return ["MCP tools assigned to this role:", ...rows].join("\n");
+}
 
 function inferSkillCategory(text: string, fallbackPath: string, explicit?: string): string {
   if (explicit) return slug(explicit).replaceAll("_", "-");
@@ -604,6 +766,7 @@ function roleGuidance(agent: Agent, requiredSkills: string[]): string {
     `Role: ${agent.role}`,
     `Executor: ${agent.executor}`,
     `Required skills: ${requiredSkills.join(", ")}`,
+    mcpManifestForAgent(agent),
     "Stay inside this role and use the relevant skills before editing or validating."
   ].join("\n");
 }
@@ -1167,6 +1330,8 @@ app.get("/api/state", async (_req, res) => {
     alerts,
     upstreams: upstreamStatus(),
     repositories: listRepositories(),
+    mcpMarketplace,
+    mcpServers: publicMcpServers(),
     skillRegistry: activeSkillRegistry(),
     skillImports: skillImportReports,
     hiringRequests: Array.from(hiringRequests.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
@@ -1263,6 +1428,79 @@ app.post("/api/skills/import-repo", async (req, res) => {
     res.status(201).json(report);
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/mcp/install", (req, res) => {
+  const { marketplaceId } = (req.body ?? {}) as { marketplaceId?: string };
+  const item = mcpMarketplace.find((entry) => entry.id === marketplaceId);
+  if (!item) return res.status(404).json({ error: "MCP marketplace item not found" });
+  const now = new Date().toISOString();
+  const existing = mcpServers.get(item.id);
+  const server: McpServerConfig = {
+    ...item,
+    env: { ...(item.env ?? {}), ...(existing?.env ?? {}) },
+    roles: existing?.roles ?? item.roles,
+    permissions: existing?.permissions ?? item.permissions,
+    status: existing?.status === "enabled" ? "enabled" : "installed",
+    installedAt: existing?.installedAt ?? now,
+    updatedAt: now,
+    lastTestAt: existing?.lastTestAt,
+    lastTestStatus: existing?.lastTestStatus,
+    error: undefined
+  };
+  try {
+    validateMcpConfig(server);
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
+  mcpServers.set(server.id, server);
+  saveMcpServers();
+  addEvent("zh:mcp:installed", `Installed ${server.name}`);
+  res.status(201).json(server);
+});
+
+app.put("/api/mcp/:serverId", (req, res) => {
+  const existing = mcpServers.get(req.params.serverId);
+  if (!existing) return res.status(404).json({ error: "MCP server not found" });
+  const next = { ...existing, ...(req.body ?? {}), id: existing.id, updatedAt: new Date().toISOString() } as McpServerConfig;
+  try {
+    validateMcpConfig(next);
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
+  mcpServers.set(next.id, next);
+  saveMcpServers();
+  addEvent("zh:mcp:updated", `Updated ${next.name}`);
+  res.json(next);
+});
+
+app.post("/api/mcp/:serverId/test", (req, res) => {
+  const server = mcpServers.get(req.params.serverId);
+  if (!server) return res.status(404).json({ error: "MCP server not found" });
+  try {
+    validateMcpConfig(server);
+    const missingSecrets = Object.entries(server.env ?? {})
+      .filter(([, value]) => /^\$\{secret:[A-Z0-9_]+\}$/.test(value))
+      .map(([key]) => key);
+    server.lastTestAt = new Date().toISOString();
+    server.lastTestStatus = missingSecrets.length ? "failed" : "passed";
+    server.error = missingSecrets.length ? `Missing secret values: ${missingSecrets.join(", ")}` : undefined;
+    mcpServers.set(server.id, server);
+    saveMcpServers();
+    res.status(missingSecrets.length ? 422 : 200).json({
+      ...server,
+      message: missingSecrets.length
+        ? "MCP config is valid, but secrets must be filled before runtime use."
+        : "MCP config is ready for role assignment."
+    });
+  } catch (error) {
+    server.lastTestAt = new Date().toISOString();
+    server.lastTestStatus = "failed";
+    server.error = (error as Error).message;
+    mcpServers.set(server.id, server);
+    saveMcpServers();
+    res.status(400).json(server);
   }
 });
 

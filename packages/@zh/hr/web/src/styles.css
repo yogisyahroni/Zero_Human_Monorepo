@@ -406,6 +406,11 @@ textarea {
   font-size: 13px;
   margin: 10px 0 0;
 }
+.formSuccess {
+  color: var(--accent);
+  font-size: 13px;
+  margin: 10px 0 0;
+}
 .protectionStats {
   display: grid;
   gap: 9px;
@@ -642,6 +647,75 @@ textarea {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+.mcpMarketplace,
+.mcpRoleMap {
+  grid-column: span 2;
+}
+.mcpSearch {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.mcpCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.mcpCard,
+.mcpSummary,
+.roleToolCard {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+}
+.mcpCard {
+  display: grid;
+  gap: 10px;
+}
+.mcpCard strong,
+.mcpSummary strong,
+.roleToolCard strong {
+  display: block;
+}
+.mcpCard span,
+.mcpCard p,
+.mcpSummary span,
+.roleToolCard span {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+.mcpCard p {
+  min-height: 42px;
+}
+.mcpCardFooter,
+.mcpSummary,
+.mcpActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.jsonEditor {
+  min-height: 360px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+}
+.mcpActions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.roleToolGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+}
 .skillCard {
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -694,7 +768,9 @@ textarea {
 .status.reviewing, .status.pending_review { border-color: var(--accent); color: var(--accent); }
 .status.error { border-color: var(--danger); color: var(--danger); }
 .status.done, .status.idle { border-color: #8aa878; color: #c4ef98; }
-.status.present, .status.online { border-color: var(--accent); color: var(--accent); }
+.status.present, .status.online, .status.available, .status.installed, .status.enabled, .status.passed { border-color: var(--accent); color: var(--accent); }
+.status.disabled { border-color: #6b716c; color: #a6aaa3; }
+.status.failed { border-color: var(--danger); color: var(--danger); }
 .events ol {
   margin: 0;
   padding: 0;
@@ -790,4 +866,6 @@ textarea {
   .hireForm,
   .taskRow, .repoRow, .comboRow, .hireCard { grid-template-columns: 1fr; }
   .taskActions, .repoActions, .hireActions { justify-content: flex-start; }
+  .mcpMarketplace, .mcpRoleMap { grid-column: auto; }
+  .mcpSummary, .mcpCardFooter, .mcpActions { align-items: flex-start; justify-content: flex-start; flex-direction: column; }
 }
