@@ -237,6 +237,7 @@ type PaperclipChatSignalReport = {
   scanned: number;
   detected: number;
   createdRequests: number;
+  ensuredPaperclipAgents: number;
   skippedDuplicates: number;
   processedComments: number;
   unavailable: boolean;
@@ -246,9 +247,10 @@ type PaperclipChatSignalReport = {
     issueTitle: string;
     agentName?: string;
     role?: AgentRole;
-    action: "hiring_request_created" | "duplicate_skipped" | "ignored";
+    action: "hiring_request_created" | "paperclip_agent_created" | "paperclip_agent_exists" | "duplicate_skipped" | "ignored";
     reason: string;
     hiringRequestId?: string;
+    paperclipAgentId?: string;
   }>;
   error?: string;
   createdAt: string;
@@ -266,7 +268,7 @@ type PaperclipHermesBridgeReport = {
     agentId?: string;
     agentName?: string;
     role?: string;
-    action: "protocol_synced" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
+    action: "protocol_synced" | "agent_created" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
     reason: string;
   }>;
   error?: string;
@@ -516,12 +518,14 @@ async function upsertZeroHumanPaperclipSkill(
 
 async function resolvePaperclipCompanyId(client: PoolClient): Promise<string> {
   if (process.env.PAPERCLIP_COMPANY_ID) return process.env.PAPERCLIP_COMPANY_ID;
+  const companyResult = await client.query<{ id: string }>(
+    "select id from companies order by created_at desc, updated_at desc limit 1"
+  );
+  if (companyResult.rows[0]?.id) return companyResult.rows[0].id;
   const agentResult = await client.query<{ company_id: string }>(
-    "select company_id from agents order by updated_at desc nulls last, created_at desc limit 1"
+    "select company_id from agents order by created_at desc, updated_at desc nulls last limit 1"
   );
   if (agentResult.rows[0]?.company_id) return agentResult.rows[0].company_id;
-  const companyResult = await client.query<{ id: string }>("select id from companies order by updated_at desc, created_at desc limit 1");
-  if (companyResult.rows[0]?.id) return companyResult.rows[0].id;
   throw new Error("No Paperclip company found. Complete Paperclip onboarding first.");
 }
 
@@ -818,6 +822,175 @@ function paperclipNativeMcpServersForRole(row: { name: string; role: string }): 
   return sequentialThinking ? [codexMcpServerPayload(sequentialThinking)] : [];
 }
 
+type PaperclipAgentRow = {
+  id: string;
+  name: string;
+  role: string;
+  title: string | null;
+  adapter_type: string;
+  adapter_config: unknown;
+  runtime_config: unknown;
+  permissions: unknown;
+};
+
+function paperclipAgentTitle(agent: Agent): string {
+  const titles: Record<AgentRole, string> = {
+    cto: "Chief Technology Officer",
+    frontend: "Frontend Engineer",
+    backend: "Backend Engineer",
+    qa: "Quality Engineer",
+    devops: "DevOps Engineer",
+    product: "Product Manager",
+    design: "Brand and Product Designer",
+    marketing: "Growth Marketer",
+    sales: "Sales Lead",
+    support: "Customer Success",
+    finance: "Finance Operations",
+    operations: "Operations Lead",
+    research: "Research Analyst",
+    legal: "Legal and Compliance"
+  };
+  return titles[agent.role] ?? agent.id.replaceAll("_", " ");
+}
+
+function paperclipAgentIcon(agent: Agent): string {
+  const icons: Record<AgentRole, string> = {
+    cto: "Cpu",
+    frontend: "Monitor",
+    backend: "Database",
+    qa: "ShieldCheck",
+    devops: "Server",
+    product: "ClipboardList",
+    design: "PenTool",
+    marketing: "TrendingUp",
+    sales: "Handshake",
+    support: "Headphones",
+    finance: "DollarSign",
+    operations: "Workflow",
+    research: "Search",
+    legal: "Scale"
+  };
+  return icons[agent.role] ?? "Bot";
+}
+
+function paperclipAgentCapabilities(agent: Agent): string {
+  const roleSkills = desiredSkillsForAgentProfile(agent).slice(0, 10).join(", ");
+  const mcp = enabledMcpServersForAgent(agent).map((server) => server.name).join(", ") || "none";
+  return [
+    `Zero-Human ${agent.role} role managed by the owner manifest.`,
+    `Executor: ${agent.executor}. Model combo: ${agent.modelCombo}.`,
+    `Primary skills: ${roleSkills || "role triage"}.`,
+    `MCP access: ${mcp}.`,
+    "Use Hermes Operating Protocol before broad exploration, then execute or delegate concrete work."
+  ].join(" ");
+}
+
+async function desiredPaperclipSkillKeysForAgent(client: PoolClient, companyId: string, agent: Agent, syncedAt: string): Promise<string[]> {
+  const zeroHumanSkillKeys: string[] = [];
+  for (const skillId of desiredSkillsForAgentProfile(agent)) {
+    zeroHumanSkillKeys.push(await upsertZeroHumanPaperclipSkill(client, companyId, skillId, syncedAt, agent.role));
+  }
+  return Array.from(new Set([
+    hermesProtocolSkillKey,
+    ...paperclipNativeDesiredSkillsForRole({ name: agent.id, role: agent.role }),
+    ...zeroHumanSkillKeys
+  ]));
+}
+
+async function ensurePaperclipAgentForZeroHumanAgent(
+  client: PoolClient,
+  companyId: string,
+  agent: Agent,
+  syncedAt: string,
+  reason = "Zero-Human role exists but Paperclip agent is missing."
+): Promise<{ id: string; created: boolean; name: string; role: string }> {
+  const existing = await client.query<{ id: string; name: string; role: string }>(
+    `select id::text, name, role
+       from agents
+      where company_id = $1
+        and (lower(role) = lower($2) or lower(name) = lower($3) or lower(name) = lower($4))
+      order by created_at asc
+      limit 1`,
+    [companyId, agent.role, agent.id, agent.id.replaceAll("_", " ")]
+  );
+  if (existing.rows[0]) {
+    markPaperclipAgentSynced(agent.id, existing.rows[0].id);
+    return { ...existing.rows[0], created: false };
+  }
+
+  const ceoResult = await client.query<PaperclipAgentRow>(
+    `select id::text, name, role, title, adapter_type, adapter_config, runtime_config, permissions
+       from agents
+      where company_id = $1 and lower(role) = 'ceo'
+      order by created_at asc
+      limit 1`,
+    [companyId]
+  );
+  const ceo = ceoResult.rows[0];
+  const baseConfig = paperclipAdapterConfig(ceo?.adapter_config);
+  const desiredSkills = await desiredPaperclipSkillKeysForAgent(client, companyId, agent, syncedAt);
+  const desiredMcpServers = enabledMcpServersForAgent(agent);
+  const adapterConfig: Record<string, unknown> = {
+    ...baseConfig,
+    model: typeof baseConfig.model === "string" && baseConfig.model.trim() ? baseConfig.model : "combotest",
+    paperclipSkillSync: {
+      ...paperclipAdapterConfig(baseConfig.paperclipSkillSync),
+      desiredSkills
+    },
+    zeroHumanMcpSync: {
+      ...paperclipAdapterConfig(baseConfig.zeroHumanMcpSync),
+      source: "zero-human-role-map",
+      syncedAt,
+      servers: desiredMcpServers
+    }
+  };
+  delete adapterConfig.instructionsFilePath;
+  delete adapterConfig.instructionsRootPath;
+  delete adapterConfig.instructionsEntryFile;
+  delete adapterConfig.instructionsBundleMode;
+
+  const runtimeConfig = {
+    heartbeat: {
+      enabled: true,
+      wakeOnDemand: true,
+      maxConcurrentRuns: agent.role === "cto" ? 6 : 3
+    }
+  };
+  const permissions = ["ceo", "cto", "product", "operations"].includes(agent.role)
+    ? { canCreateAgents: true }
+    : { canCreateAgents: false };
+  const inserted = await client.query<{ id: string; name: string; role: string }>(
+    `insert into agents
+      (company_id, name, role, title, icon, status, reports_to, capabilities, adapter_type, adapter_config, runtime_config, budget_monthly_cents, permissions, metadata)
+     values ($1, $2, $3, $4, $5, 'idle', $6::uuid, $7, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13::jsonb)
+     returning id::text, name, role`,
+    [
+      companyId,
+      agent.id.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      agent.role,
+      paperclipAgentTitle(agent),
+      paperclipAgentIcon(agent),
+      ceo?.id ?? null,
+      paperclipAgentCapabilities(agent),
+      ceo?.adapter_type ?? "codex_local",
+      JSON.stringify(adapterConfig),
+      JSON.stringify(runtimeConfig),
+      Math.round(agent.maxBudgetUsd * 100),
+      JSON.stringify(permissions),
+      JSON.stringify({
+        zeroHumanManaged: true,
+        zeroHumanAgentId: agent.id,
+        zeroHumanRole: agent.role,
+        zeroHumanReason: reason,
+        syncedAt
+      })
+    ]
+  );
+  const row = inserted.rows[0];
+  markPaperclipAgentSynced(agent.id, row.id);
+  return { ...row, created: true };
+}
+
 async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeReport> {
   const report: PaperclipHermesBridgeReport = {
     id: `paperclip_hermes_${nanoid(8)}`,
@@ -878,6 +1051,26 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
     );
     report.protocolSkillSynced = true;
     report.details.push({ action: "protocol_synced", reason: "Hermes protocol skill upserted in Paperclip." });
+
+    for (const agent of Array.from(agents.values()).sort((a, b) => a.id.localeCompare(b.id))) {
+      if (agent.status === "paused") continue;
+      const ensured = await ensurePaperclipAgentForZeroHumanAgent(
+        client,
+        companyId,
+        agent,
+        report.createdAt,
+        "Hermes bridge sync ensures Paperclip has a real worker for every active Zero-Human role."
+      );
+      if (ensured.created) {
+        report.details.push({
+          agentId: ensured.id,
+          agentName: ensured.name,
+          role: ensured.role,
+          action: "agent_created",
+          reason: `Created Paperclip agent for Zero-Human role ${agent.role}.`
+        });
+      }
+    }
 
     const agentResult = await client.query<{ id: string; name: string; role: string; adapter_config: unknown }>(
       "select id::text, name, role, adapter_config from agents where company_id = $1 order by created_at asc",
@@ -1229,6 +1422,7 @@ function publicPaperclipChatSignalReport(): PaperclipChatSignalReport {
     scanned: 0,
     detected: 0,
     createdRequests: 0,
+    ensuredPaperclipAgents: 0,
     skippedDuplicates: 0,
     processedComments: loadProcessedPaperclipChatSignals().size,
     unavailable: !paperclipDatabaseUrl,
@@ -1249,6 +1443,7 @@ async function scanPaperclipChatSignals(): Promise<PaperclipChatSignalReport> {
     scanned: 0,
     detected: 0,
     createdRequests: 0,
+    ensuredPaperclipAgents: 0,
     skippedDuplicates: 0,
     processedComments: processedCommentIds.size,
     unavailable: false,
@@ -1296,6 +1491,14 @@ async function scanPaperclipChatSignals(): Promise<PaperclipChatSignalReport> {
       const wantsAdditionalAgent = /\b(another|additional|second|extra|more|tambahan|lagi)\b/i.test(comment.body);
       const existingRoleAgent = Array.from(agents.values()).find((agent) => agent.role === signal.role);
       if (existingRoleAgent && !wantsAdditionalAgent) {
+        const ensured = await ensurePaperclipAgentForZeroHumanAgent(
+          client,
+          companyId,
+          existingRoleAgent,
+          report.createdAt,
+          `Paperclip chat requested ${signal.role}: ${signal.reason}`
+        );
+        if (ensured.created) report.ensuredPaperclipAgents += 1;
         processedCommentIds.add(comment.comment_id);
         report.details.push({
           commentId: comment.comment_id,
@@ -1303,8 +1506,11 @@ async function scanPaperclipChatSignals(): Promise<PaperclipChatSignalReport> {
           issueTitle: comment.issue_title,
           agentName: comment.agent_name ?? undefined,
           role: signal.role,
-          action: "ignored",
-          reason: `${existingRoleAgent.id} already covers ${signal.role}.`
+          action: ensured.created ? "paperclip_agent_created" : "paperclip_agent_exists",
+          reason: ensured.created
+            ? `${existingRoleAgent.id} already exists in Zero-Human and has now been created in Paperclip.`
+            : `${existingRoleAgent.id} already exists in Zero-Human and Paperclip as ${ensured.name}.`,
+          paperclipAgentId: ensured.id
         });
         continue;
       }
@@ -3042,7 +3248,7 @@ app.post("/api/paperclip/chat/signals/scan", async (_req, res) => {
     "paperclip_chat_signal_scan",
     report.unavailable
       ? `Paperclip chat scan unavailable: ${report.error}`
-      : `Scanned ${report.scanned} Paperclip comments and created ${report.createdRequests} hiring requests.`
+      : `Scanned ${report.scanned} Paperclip comments, ensured ${report.ensuredPaperclipAgents} Paperclip agents, and created ${report.createdRequests} hiring requests.`
   );
   res.status(report.unavailable ? 503 : 200).json(report);
 });
