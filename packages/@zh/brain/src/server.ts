@@ -72,7 +72,7 @@ function requiredSkillsForTask(task: Task, agent: Agent): string[] {
     .map(([skill]) => skill);
   return Array.from(new Set([
     ...registryRoleSkills,
-    ...roleSkillCatalog[agent.role],
+    ...(roleSkillCatalog[agent.role] ?? []),
     ...agent.skills,
     ...taskSkillCatalog[task.type],
     ...keywordSkills(task.description)
@@ -491,6 +491,87 @@ app.get("/api/memory", (_req, res) => {
     skills: Object.values(persisted.skills),
     native: hermesMemoryContractStatus()
   });
+});
+
+app.post("/api/memory/remember", (req, res) => {
+  const agentId = typeof req.body?.agentId === "string" ? req.body.agentId.trim() : "";
+  const note = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+  if (!agentId || !note) {
+    return res.status(400).json({ error: "agentId and note are required" });
+  }
+  memoryStore.remember(agentId, note.slice(0, 1200));
+  res.status(201).json({ ok: true, agentId });
+});
+
+app.post("/api/preflight", (req, res) => {
+  const agentId = typeof req.body?.agentId === "string" ? req.body.agentId.trim() : "";
+  const role = typeof req.body?.role === "string" ? req.body.role.trim() : "general";
+  const taskText = [
+    typeof req.body?.issueTitle === "string" ? req.body.issueTitle : "",
+    typeof req.body?.promptSummary === "string" ? req.body.promptSummary : ""
+  ].join("\n");
+  const agent = agents.get(agentId) ?? ({
+    id: agentId || role,
+    role,
+    brain: "hermes",
+    memory: "persistent",
+    executor: "codex",
+    skills: [],
+    modelCombo: typeof req.body?.model === "string" ? req.body.model : "cheap_stack",
+    maxBudgetUsd: 5,
+    status: "working",
+    costAccumulatedUsd: 0
+  } as unknown as Agent);
+  const task = {
+    id: typeof req.body?.runId === "string" ? req.body.runId : `paperclip_${Date.now()}`,
+    agentId: agent.id,
+    type: "coding",
+    description: taskText || "Paperclip run",
+    priority: 2,
+    status: "assigned",
+    context: [],
+    costAccumulated: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  } as Task;
+  const requiredSkills = requiredSkillsForTask(task, agent);
+  const recentMemory = memoryStore.recentMemory(agent.id);
+  const blockerPolicy = [
+    "Treat blocked as recovery, not terminal completion.",
+    "Diagnose the blocker first, then fix, delegate, request/hire the needed agent, or ask one concrete owner decision.",
+    "Only leave blocked with an exact unblocker, owner, and next action.",
+    "When a role is missing, create/request that role and delegate a child issue instead of retrying the same agent loop."
+  ];
+  memoryStore.remember(agent.id, `Preflight for Paperclip run ${task.id}: role=${agent.role}; skills=${requiredSkills.join(", ")}.`);
+  res.json({
+    ok: true,
+    runId: task.id,
+    agentId: agent.id,
+    role: agent.role,
+    requiredSkills,
+    recentMemory,
+    blockerPolicy,
+    guidance: [
+      "Hermes/Zero-Human preflight:",
+      roleGuidanceForTask(agent, requiredSkills),
+      "",
+      "Blocker recovery policy:",
+      ...blockerPolicy.map((line) => `- ${line}`),
+      "",
+      "Relevant memory:",
+      recentMemory || "- No relevant memory yet."
+    ].join("\n")
+  });
+});
+
+app.post("/api/outcome", (req, res) => {
+  const agentId = typeof req.body?.agentId === "string" ? req.body.agentId.trim() : "paperclip_agent";
+  const runId = typeof req.body?.runId === "string" ? req.body.runId.trim() : `paperclip_${Date.now()}`;
+  const status = typeof req.body?.status === "string" ? req.body.status.trim() : "unknown";
+  const summary = typeof req.body?.summary === "string" ? req.body.summary.trim().slice(0, 1000) : "";
+  const skills = Array.isArray(req.body?.skills) ? req.body.skills.map(String).slice(0, 20) : [];
+  memoryStore.remember(agentId, `Paperclip outcome ${runId}: status=${status}; skills=${skills.join(", ") || "none"}; ${summary}`);
+  res.status(201).json({ ok: true, agentId, runId });
 });
 
 app.get("/api/tasks", (_req, res) => {

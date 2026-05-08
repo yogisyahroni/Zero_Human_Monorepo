@@ -648,8 +648,116 @@ textarea {
   overflow-wrap: anywhere;
 }
 .mcpMarketplace,
-.mcpRoleMap {
+.mcpRoleMap,
+.paperclipSync,
+.paperclipHermesBridge,
+.paperclipSkillSync,
+.issuePolicy {
   grid-column: span 2;
+}
+.policyGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.policyCard,
+.policyDecision {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+}
+.policyCard {
+  display: grid;
+  gap: 10px;
+}
+.policyCard p,
+.policyDecision p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+.issuePolicyTester {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.issuePolicyTester label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.issuePolicyTester label:nth-of-type(5),
+.issuePolicyTester button,
+.policyDecision {
+  grid-column: 1 / -1;
+}
+.syncSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.syncSummary span {
+  border: 1px solid var(--line);
+  background: #111514;
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.paperclipSyncGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+.syncCard {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+.runbook {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 96px;
+  max-height: 170px;
+  overflow: auto;
+  margin: 0;
+  border: 1px dashed #3a403d;
+  border-radius: 8px;
+  background: #111514;
+  color: var(--muted);
+  padding: 10px;
+  font-size: 12px;
+}
+.paperclipSkillDetails {
+  display: grid;
+  gap: 8px;
+}
+.paperclipSkillRow {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.paperclipSkillRow strong,
+.paperclipSkillRow span {
+  display: block;
+}
+.paperclipSkillRow span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
 }
 .mcpSearch {
   display: grid;
@@ -796,9 +904,12 @@ textarea {
 .status.reviewing, .status.pending_review { border-color: var(--accent); color: var(--accent); }
 .status.error { border-color: var(--danger); color: var(--danger); }
 .status.done, .status.idle { border-color: #8aa878; color: #c4ef98; }
-.status.present, .status.online, .status.available, .status.installed, .status.enabled, .status.passed { border-color: var(--accent); color: var(--accent); }
+.status.present, .status.online, .status.available, .status.installed, .status.enabled, .status.passed, .status.synced, .status.imported, .status.updated { border-color: var(--accent); color: var(--accent); }
 .status.disabled { border-color: #6b716c; color: #a6aaa3; }
-.status.failed { border-color: var(--danger); color: var(--danger); }
+.status.failed, .status.missing, .status.blocked { border-color: var(--danger); color: var(--danger); }
+.status.drifted { border-color: #ffb347; color: #ffcc75; }
+.status.triage, .status.approval_required { border-color: #ffb347; color: #ffcc75; }
+.status.auto_assign { border-color: var(--accent); color: var(--accent); }
 .events ol {
   margin: 0;
   padding: 0;
@@ -894,7 +1005,8 @@ textarea {
   .hireForm,
   .taskRow, .repoRow, .comboRow, .hireCard { grid-template-columns: 1fr; }
   .taskActions, .repoActions, .hireActions { justify-content: flex-start; }
-  .mcpMarketplace, .mcpRoleMap { grid-column: auto; }
+  .mcpMarketplace, .mcpRoleMap, .paperclipSync, .paperclipHermesBridge, .paperclipSkillSync, .issuePolicy { grid-column: auto; }
   .mcpImportGrid { grid-template-columns: 1fr; }
+  .issuePolicyTester { grid-template-columns: 1fr; }
   .mcpSummary, .mcpCardFooter, .mcpActions { align-items: flex-start; justify-content: flex-start; flex-direction: column; }
 }

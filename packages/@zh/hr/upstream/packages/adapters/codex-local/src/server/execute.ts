@@ -163,6 +163,116 @@ function resolveCodexSkillsDir(codexHome: string): string {
   return path.join(codexHome, "skills");
 }
 
+type ZeroHumanMcpServerConfig = {
+  id: string;
+  name?: string;
+  transport?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+};
+
+const ZERO_HUMAN_MCP_BEGIN = "# BEGIN PAPERCLIP ZERO-HUMAN MCP";
+const ZERO_HUMAN_MCP_END = "# END PAPERCLIP ZERO-HUMAN MCP";
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlStringArray(values: string[]): string {
+  return `[${values.map((value) => tomlString(value)).join(", ")}]`;
+}
+
+function tomlInlineStringTable(values: Record<string, string>): string {
+  const entries = Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return "{}";
+  return `{ ${entries.map(([key, value]) => `${key} = ${tomlString(value)}`).join(", ")} }`;
+}
+
+function hasUnresolvedSecret(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("${secret:");
+  if (Array.isArray(value)) return value.some((item) => hasUnresolvedSecret(item));
+  if (value && typeof value === "object") return Object.values(value).some((item) => hasUnresolvedSecret(item));
+  return false;
+}
+
+function parseZeroHumanMcpServers(config: Record<string, unknown>): ZeroHumanMcpServerConfig[] {
+  const syncConfig = parseObject(config.zeroHumanMcpSync);
+  const servers = Array.isArray(syncConfig.servers) ? syncConfig.servers : [];
+  return servers
+    .filter((server): server is Record<string, unknown> => Boolean(server) && typeof server === "object")
+    .map((server) => {
+      const env = server.env && typeof server.env === "object"
+        ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, String(value)]))
+        : {};
+      return {
+        id: asString(server.id, "").trim(),
+        name: asString(server.name, "").trim(),
+        transport: asString(server.transport, "stdio").trim(),
+        command: asString(server.command, "").trim(),
+        args: Array.isArray(server.args) ? server.args.map(String) : [],
+        url: asString(server.url, "").trim(),
+        env,
+      };
+    })
+    .filter((server) => /^[a-z0-9._-]+$/i.test(server.id));
+}
+
+function renderZeroHumanMcpTomlBlock(servers: ZeroHumanMcpServerConfig[]): string {
+  const lines = [
+    ZERO_HUMAN_MCP_BEGIN,
+    "# Managed by Zero-Human Studio. Changes inside this block are overwritten on each Paperclip Codex run.",
+  ];
+
+  for (const server of servers) {
+    if (hasUnresolvedSecret(server)) continue;
+    lines.push("");
+    lines.push(`[mcp_servers.${tomlString(server.id)}]`);
+    if (server.transport && server.transport !== "stdio") {
+      lines.push(`transport = ${tomlString(server.transport)}`);
+    }
+    if (server.command) lines.push(`command = ${tomlString(server.command)}`);
+    if (server.args?.length) lines.push(`args = ${tomlStringArray(server.args)}`);
+    if (server.url) lines.push(`url = ${tomlString(server.url)}`);
+    if (server.env) lines.push(`env = ${tomlInlineStringTable(server.env)}`);
+  }
+
+  lines.push(ZERO_HUMAN_MCP_END);
+  return lines.join("\n");
+}
+
+function replaceManagedZeroHumanMcpBlock(content: string, block: string): string {
+  const begin = content.indexOf(ZERO_HUMAN_MCP_BEGIN);
+  const end = content.indexOf(ZERO_HUMAN_MCP_END);
+  if (begin >= 0 && end >= begin) {
+    const afterEnd = end + ZERO_HUMAN_MCP_END.length;
+    return `${content.slice(0, begin).trimEnd()}\n\n${block}\n${content.slice(afterEnd).trimStart()}`.trimEnd() + "\n";
+  }
+  return `${content.trimEnd()}\n\n${block}\n`;
+}
+
+async function ensureZeroHumanMcpConfig(
+  codexHome: string,
+  config: Record<string, unknown>,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<void> {
+  const servers = parseZeroHumanMcpServers(config);
+  const usableServers = servers.filter((server) => !hasUnresolvedSecret(server));
+  const configPath = path.join(codexHome, "config.toml");
+  const existing = await fs.readFile(configPath, "utf8").catch(() => "");
+  const next = replaceManagedZeroHumanMcpBlock(existing, renderZeroHumanMcpTomlBlock(servers));
+  if (next !== existing) {
+    await fs.writeFile(configPath, next, "utf8");
+  }
+  if (usableServers.length > 0) {
+    await onLog(
+      "stdout",
+      `[paperclip] Injected ${usableServers.length} Zero-Human MCP server(s) into Codex config: ${usableServers.map((server) => server.id).join(", ")}.\n`,
+    );
+  }
+}
+
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
   skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
@@ -175,6 +285,95 @@ type CodexTransientFallbackMode =
   | "safer_invocation"
   | "fresh_session"
   | "fresh_session_safer_invocation";
+
+type ZeroHumanPreflight = {
+  ok?: boolean;
+  guidance?: string;
+  requiredSkills?: string[];
+};
+
+function adapterAgentField(agent: AdapterExecutionContext["agent"], key: string): string {
+  return asString((agent as unknown as Record<string, unknown>)[key], "");
+}
+
+function resolveZeroHumanBrainAdapterUrl(config: Record<string, unknown>): string {
+  return (
+    asString(config.zeroHumanBrainAdapterUrl, "").trim() ||
+    process.env.ZH_BRAIN_ADAPTER_URL?.trim() ||
+    process.env.ZERO_HUMAN_BRAIN_URL?.trim() ||
+    ""
+  ).replace(/\/$/, "");
+}
+
+async function postZeroHumanPreflight(input: {
+  brainUrl: string;
+  runId: string;
+  agent: AdapterExecutionContext["agent"];
+  model: string;
+  context: Record<string, unknown>;
+  promptSummary: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<ZeroHumanPreflight | null> {
+  if (!input.brainUrl) return null;
+  try {
+    const issue = parseObject(input.context.issue);
+    const response = await fetch(`${input.brainUrl}/api/preflight`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runId: input.runId,
+        agentId: adapterAgentField(input.agent, "slug") || adapterAgentField(input.agent, "id"),
+        agentName: adapterAgentField(input.agent, "name"),
+        role: adapterAgentField(input.agent, "role"),
+        model: input.model,
+        issueTitle: asString(issue.title, ""),
+        promptSummary: input.promptSummary.slice(0, 4000),
+      }),
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) {
+      await input.onLog("stderr", `[paperclip] Zero-Human Hermes preflight returned HTTP ${response.status}; continuing without live preflight.\n`);
+      return null;
+    }
+    const body = await response.json() as ZeroHumanPreflight;
+    if (body.guidance) {
+      await input.onLog("stdout", `[paperclip] Zero-Human Hermes preflight injected ${body.requiredSkills?.length ?? 0} skill hint(s).\n`);
+    }
+    return body;
+  } catch (error) {
+    await input.onLog("stderr", `[paperclip] Zero-Human Hermes preflight unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+    return null;
+  }
+}
+
+async function postZeroHumanOutcome(input: {
+  brainUrl: string;
+  runId: string;
+  agent: AdapterExecutionContext["agent"];
+  result: AdapterExecutionResult;
+  skills: string[];
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  if (!input.brainUrl) return;
+  try {
+    await fetch(`${input.brainUrl}/api/outcome`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runId: input.runId,
+        agentId: adapterAgentField(input.agent, "slug") || adapterAgentField(input.agent, "id"),
+        agentName: adapterAgentField(input.agent, "name"),
+        role: adapterAgentField(input.agent, "role"),
+        status: (input.result.exitCode ?? 0) === 0 ? "succeeded" : "failed",
+        summary: input.result.summary || input.result.errorMessage || "Paperclip Codex run completed.",
+        skills: input.skills,
+      }),
+      signal: AbortSignal.timeout(4000),
+    });
+  } catch (error) {
+    await input.onLog("stderr", `[paperclip] Zero-Human Hermes outcome write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
 
 function readCodexTransientFallbackMode(context: Record<string, unknown>): CodexTransientFallbackMode | null {
   const value = asString(context.codexTransientFallbackMode, "").trim();
@@ -290,6 +489,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
+  const zeroHumanBrainAdapterUrl = resolveZeroHumanBrainAdapterUrl(config);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -358,6 +558,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       desiredSkillNames,
     },
   );
+  await ensureZeroHumanMcpConfig(effectiveCodexHome, config, onLog);
   const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
@@ -651,10 +852,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const preflightPromptSummary = joinPromptSections([
+    renderedBootstrapPrompt,
+    wakePrompt,
+    codexFallbackHandoffNote,
+    sessionHandoffNote,
+    renderedPrompt,
+  ]);
+  const zeroHumanPreflight = await postZeroHumanPreflight({
+    brainUrl: zeroHumanBrainAdapterUrl,
+    runId,
+    agent,
+    model,
+    context,
+    promptSummary: preflightPromptSummary,
+    onLog,
+  });
+  const zeroHumanPreflightPrompt = zeroHumanPreflight?.guidance
+    ? [
+        "Zero-Human Hermes preflight",
+        "",
+        zeroHumanPreflight.guidance,
+        "",
+        "This preflight is authoritative for this run. Use it to select relevant skills, avoid repeated failure loops, and treat blocked status as a recovery state that needs a concrete unblocker.",
+      ].join("\n")
+    : "";
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    zeroHumanPreflightPrompt,
     codexFallbackHandoffNote,
     sessionHandoffNote,
     renderedPrompt,
@@ -664,6 +891,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
+    zeroHumanPreflightChars: zeroHumanPreflightPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
@@ -815,6 +1043,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId);
+    let result: AdapterExecutionResult;
     if (
       sessionId &&
       !initial.proc.timedOut &&
@@ -826,10 +1055,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
-      return toResult(retry, true, true);
+      result = toResult(retry, true, true);
+    } else {
+      result = toResult(initial, false, false);
     }
 
-    return toResult(initial, false, false);
+    await postZeroHumanOutcome({
+      brainUrl: zeroHumanBrainAdapterUrl,
+      runId,
+      agent,
+      result,
+      skills: zeroHumanPreflight?.requiredSkills ?? desiredSkillNames,
+      onLog,
+    });
+    return result;
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();

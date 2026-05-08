@@ -141,6 +141,130 @@ type McpMarketplaceItem = Omit<McpServerConfig, "status" | "installedAt" | "upda
   tags: string[];
 };
 
+type PaperclipSyncRecord = {
+  agentId: string;
+  role: string;
+  desiredName: string;
+  desiredHash: string;
+  desiredSkills: string[];
+  desiredMcpServers: Array<{
+    id: string;
+    name: string;
+    transport: "stdio" | "http" | "sse";
+    permissionMode: "read-only" | "write" | "approval-required";
+  }>;
+  executor: string;
+  modelCombo: string;
+  status: "missing" | "drifted" | "synced";
+  runbook: string;
+  paperclipAgentId?: string;
+  lastSyncedAt?: string;
+  updatedAt: string;
+};
+
+type PaperclipSyncState = {
+  paperclipUrl: string;
+  updatedAt: string;
+  records: PaperclipSyncRecord[];
+};
+
+type PaperclipSkillSyncReport = {
+  id: string;
+  companyId?: string;
+  registrySkills: number;
+  paperclipSkillsBefore: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+  unavailable: boolean;
+  details: Array<{ skill: string; action: "imported" | "updated" | "skipped"; reason?: string; paperclipKey?: string }>;
+  error?: string;
+  createdAt: string;
+};
+type PaperclipRepositorySyncReport = {
+  id: string;
+  companyId?: string;
+  projectId?: string;
+  repositoriesReady: number;
+  workspacesSynced: number;
+  issuesLinked: number;
+  unavailable: boolean;
+  details: Array<{
+    repositoryId: string;
+    repositoryName: string;
+    workspaceId?: string;
+    path: string;
+    action: "created" | "updated" | "skipped";
+    issuesLinked?: number;
+    reason?: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
+type PaperclipChatSignalReport = {
+  id: string;
+  companyId?: string;
+  scanned: number;
+  detected: number;
+  createdRequests: number;
+  skippedDuplicates: number;
+  processedComments: number;
+  unavailable: boolean;
+  details: Array<{
+    commentId: string;
+    issueKey: string;
+    issueTitle: string;
+    agentName?: string;
+    role?: string;
+    action: "hiring_request_created" | "duplicate_skipped" | "ignored";
+    reason: string;
+    hiringRequestId?: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
+type PaperclipHermesBridgeReport = {
+  id: string;
+  companyId?: string;
+  protocolSkillKey: string;
+  protocolSkillSynced: boolean;
+  agentsScanned: number;
+  agentsPatched: number;
+  memoryNotesWritten: number;
+  unavailable: boolean;
+  details: Array<{
+    agentId?: string;
+    agentName?: string;
+    role?: string;
+    action: "protocol_synced" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
+    reason: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
+
+type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
+type AgentIssuePolicy = {
+  role: string;
+  canCreateIssue: boolean;
+  autoAssign: boolean;
+  allowedTaskTypes: string[];
+  approvalKeywords: string[];
+  triageKeywords: string[];
+  maxPriorityWithoutApproval: 1 | 2 | 3;
+  defaultDecision: AgentIssueDecision;
+  note: string;
+};
+type AgentIssuePolicyEvaluation = {
+  agentId: string;
+  role: string;
+  decision: AgentIssueDecision;
+  reason: string;
+  suggestedTaskType: string;
+  suggestedAssignee: string;
+  requiresHumanReview: boolean;
+};
+
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
   infrastructure: { redisUrl: string; worktreeBase: string };
@@ -199,6 +323,12 @@ type State = {
     version: string | null;
   }>;
   repositories: RegisteredRepository[];
+  paperclipSync: PaperclipSyncState;
+  paperclipSkillSync: PaperclipSkillSyncReport;
+  paperclipRepositorySync: PaperclipRepositorySyncReport;
+  paperclipChatSignals: PaperclipChatSignalReport;
+  paperclipHermesBridge: PaperclipHermesBridgeReport;
+  issuePolicies: AgentIssuePolicy[];
   mcpMarketplace: McpMarketplaceItem[];
   mcpServers: McpServerConfig[];
   hiringRequests: HiringRequest[];
@@ -234,6 +364,50 @@ const fallbackState: State = {
   brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
   upstreams: [],
   repositories: [],
+  paperclipSync: { paperclipUrl: "", updatedAt: "", records: [] },
+  paperclipSkillSync: {
+    id: "paperclip_skills_not_run",
+    registrySkills: 0,
+    paperclipSkillsBefore: 0,
+    imported: 0,
+    updated: 0,
+    skipped: 0,
+    unavailable: false,
+    details: [],
+    createdAt: ""
+  },
+  paperclipRepositorySync: {
+    id: "paperclip_repositories_not_run",
+    repositoriesReady: 0,
+    workspacesSynced: 0,
+    issuesLinked: 0,
+    unavailable: false,
+    details: [],
+    createdAt: ""
+  },
+  paperclipChatSignals: {
+    id: "paperclip_chat_not_scanned",
+    scanned: 0,
+    detected: 0,
+    createdRequests: 0,
+    skippedDuplicates: 0,
+    processedComments: 0,
+    unavailable: false,
+    details: [],
+    createdAt: ""
+  },
+  paperclipHermesBridge: {
+    id: "paperclip_hermes_not_synced",
+    protocolSkillKey: "zero-human/hermes-operating-protocol",
+    protocolSkillSynced: false,
+    agentsScanned: 0,
+    agentsPatched: 0,
+    memoryNotesWritten: 0,
+    unavailable: false,
+    details: [],
+    createdAt: ""
+  },
+  issuePolicies: [],
   mcpMarketplace: [],
   mcpServers: [],
   hiringRequests: [],
@@ -323,6 +497,10 @@ function App() {
   const [skillImportDraft, setSkillImportDraft] = useState({ repositoryId: "default", path: "" });
   const [skillImportError, setSkillImportError] = useState("");
   const [latestSkillImport, setLatestSkillImport] = useState<SkillImportReport | null>(null);
+  const [paperclipSkillSyncError, setPaperclipSkillSyncError] = useState("");
+  const [paperclipRepositorySyncError, setPaperclipRepositorySyncError] = useState("");
+  const [paperclipChatSignalError, setPaperclipChatSignalError] = useState("");
+  const [paperclipHermesBridgeError, setPaperclipHermesBridgeError] = useState("");
   const [mcpQuery, setMcpQuery] = useState("");
   const [selectedMcpId, setSelectedMcpId] = useState("");
   const [mcpJsonDraft, setMcpJsonDraft] = useState("");
@@ -342,6 +520,15 @@ function App() {
   }, null, 2));
   const [mcpError, setMcpError] = useState("");
   const [mcpMessage, setMcpMessage] = useState("");
+  const [issuePolicyDraft, setIssuePolicyDraft] = useState({
+    agentId: "cto",
+    title: "Fix flaky checkout test",
+    description: "Agent found a follow-up issue while reviewing the repository.",
+    type: "coding",
+    priority: 2 as 1 | 2 | 3
+  });
+  const [issuePolicyEvaluation, setIssuePolicyEvaluation] = useState<AgentIssuePolicyEvaluation | null>(null);
+  const [issuePolicyError, setIssuePolicyError] = useState("");
   const [hireDraft, setHireDraft] = useState({
     title: "Brand Strategist",
     department: "Marketing",
@@ -403,6 +590,12 @@ function App() {
       setRepositoryId(workRepositories[0]?.id ?? "default");
     }
   }, [repositoryId, workRepositories]);
+
+  useEffect(() => {
+    if (state.agents.length && !state.agents.some((agent) => agent.id === issuePolicyDraft.agentId)) {
+      setIssuePolicyDraft((current) => ({ ...current, agentId: state.agents[0].id }));
+    }
+  }, [issuePolicyDraft.agentId, state.agents]);
 
   useEffect(() => {
     if (!skillSourceRepositories.some((repo) => repo.id === skillImportDraft.repositoryId)) {
@@ -527,6 +720,18 @@ function App() {
     setBusy(false);
   }
 
+  async function syncPaperclipRepositories() {
+    setBusy(true);
+    setPaperclipRepositorySyncError("");
+    const response = await fetch("/api/paperclip/repositories/sync", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setPaperclipRepositorySyncError(body.error ?? "Failed to sync repositories to Paperclip");
+    }
+    await refresh();
+    setBusy(false);
+  }
+
   async function importRepoSkills(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -542,6 +747,42 @@ function App() {
       setSkillImportError(body.error ?? "Failed to import skills");
     } else {
       setLatestSkillImport(body);
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function syncPaperclipSkills() {
+    setBusy(true);
+    setPaperclipSkillSyncError("");
+    const response = await fetch("/api/paperclip/skills/sync", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setPaperclipSkillSyncError(body.error ?? "Failed to sync skills to Paperclip");
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function scanPaperclipChatSignals() {
+    setBusy(true);
+    setPaperclipChatSignalError("");
+    const response = await fetch("/api/paperclip/chat/signals/scan", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setPaperclipChatSignalError(body.error ?? "Failed to scan Paperclip chat signals");
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function syncPaperclipHermesBridge() {
+    setBusy(true);
+    setPaperclipHermesBridgeError("");
+    const response = await fetch("/api/paperclip/hermes/sync", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setPaperclipHermesBridgeError(body.error ?? "Failed to sync Hermes bridge to Paperclip");
     }
     await refresh();
     setBusy(false);
@@ -670,6 +911,43 @@ function App() {
       setMcpMessage(body.message ?? "MCP test passed.");
     }
     await refresh();
+    setBusy(false);
+  }
+
+  async function syncPaperclipManifest() {
+    setBusy(true);
+    await fetch("/api/paperclip/sync", { method: "POST" });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function markPaperclipApplied(agentId: string) {
+    setBusy(true);
+    await fetch(`/api/paperclip/sync/${agentId}/applied`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paperclipAgentId: agentId })
+    });
+    await refresh();
+    setBusy(false);
+  }
+
+  async function evaluateIssuePolicy(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setIssuePolicyError("");
+    setIssuePolicyEvaluation(null);
+    const response = await fetch("/api/agent-issues/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(issuePolicyDraft)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setIssuePolicyError(body.error ?? "Issue policy evaluation failed");
+    } else {
+      setIssuePolicyEvaluation(body);
+    }
     setBusy(false);
   }
 
@@ -846,10 +1124,32 @@ function App() {
             <div className="panelHead">
               <div>
                 <h2>Hiring approvals</h2>
-                <p>Paperclip hire intake is mapped first, then activated after approval.</p>
+                <p>Paperclip chat intake is mapped first, then activated after approval.</p>
               </div>
-              <Users size={20} />
+              <button onClick={scanPaperclipChatSignals} disabled={busy}>
+                <RefreshCw size={15} /> Scan chat
+              </button>
             </div>
+            <div className="syncSummary">
+              <span>{state.paperclipChatSignals.detected} chat signals</span>
+              <span>{state.paperclipChatSignals.createdRequests} requests created</span>
+              <span>{state.paperclipChatSignals.skippedDuplicates} duplicates skipped</span>
+              <span>{state.paperclipChatSignals.processedComments} comments tracked</span>
+            </div>
+            {paperclipChatSignalError && <p className="formWarning">{paperclipChatSignalError}</p>}
+            {state.paperclipChatSignals.details.length > 0 && (
+              <div className="paperclipSkillDetails">
+                {state.paperclipChatSignals.details.slice(0, 5).map((item) => (
+                  <article className="paperclipSkillRow" key={item.commentId}>
+                    <div>
+                      <strong>{item.issueKey} · {item.role ?? "unknown role"}</strong>
+                      <span>{item.agentName ?? "agent"} · {item.reason}</span>
+                    </div>
+                    <Status value={item.action} />
+                  </article>
+                ))}
+              </div>
+            )}
             <form className="hireForm" onSubmit={createHireRequest}>
               <label>
                 Title
@@ -913,6 +1213,130 @@ function App() {
           )}
 
           {activeView === "agents" && (
+          <div className="panel issuePolicy">
+            <div className="panelHead">
+              <div>
+                <h2>Agent issue policy</h2>
+                <p>Controls whether agent-created Paperclip issues become auto-assigned work, triage, approval, or blocked.</p>
+              </div>
+              <ShieldCheck size={20} />
+            </div>
+            <div className="policyGrid">
+              {state.issuePolicies.map((policy) => (
+                <article className="policyCard" key={policy.role}>
+                  <div className="agentTop">
+                    <div>
+                      <strong>{policy.role}</strong>
+                      <span>{policy.allowedTaskTypes.join(", ")}</span>
+                    </div>
+                    <Status value={policy.canCreateIssue ? policy.defaultDecision : "blocked"} />
+                  </div>
+                  <div className="skillRow">
+                    <span>{policy.canCreateIssue ? "can create issue" : "cannot create issue"}</span>
+                    <span>{policy.autoAssign ? "auto assign allowed" : "triage first"}</span>
+                    <span>P{policy.maxPriorityWithoutApproval} without approval</span>
+                  </div>
+                  <p>{policy.note}</p>
+                </article>
+              ))}
+            </div>
+            <form className="issuePolicyTester" onSubmit={evaluateIssuePolicy}>
+              <label>
+                Agent
+                <select value={issuePolicyDraft.agentId} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, agentId: event.target.value }))}>
+                  {state.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.id} · {agent.role}</option>)}
+                </select>
+              </label>
+              <label>
+                Issue title
+                <input value={issuePolicyDraft.title} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, title: event.target.value }))} />
+              </label>
+              <label>
+                Type
+                <select value={issuePolicyDraft.type} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, type: event.target.value }))}>
+                  <option value="architecture">Architecture</option>
+                  <option value="coding">Coding</option>
+                  <option value="review">Review</option>
+                  <option value="test">Test</option>
+                  <option value="deploy">Deploy</option>
+                </select>
+              </label>
+              <label>
+                Priority
+                <input type="range" min="1" max="3" value={issuePolicyDraft.priority} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, priority: Number(event.target.value) as 1 | 2 | 3 }))} />
+              </label>
+              <label>
+                Description
+                <textarea value={issuePolicyDraft.description} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, description: event.target.value }))} />
+              </label>
+              <button disabled={busy || !issuePolicyDraft.title.trim()}>
+                <ShieldCheck size={15} /> Evaluate policy
+              </button>
+            </form>
+            {issuePolicyError && <p className="formWarning">{issuePolicyError}</p>}
+            {issuePolicyEvaluation && (
+              <article className="policyDecision">
+                <div className="agentTop">
+                  <div>
+                    <strong>{issuePolicyEvaluation.decision.replace("_", " ")}</strong>
+                    <span>{issuePolicyEvaluation.role} · {issuePolicyEvaluation.suggestedTaskType} · assignee {issuePolicyEvaluation.suggestedAssignee}</span>
+                  </div>
+                  <Status value={issuePolicyEvaluation.decision} />
+                </div>
+                <p>{issuePolicyEvaluation.reason}</p>
+              </article>
+            )}
+          </div>
+          )}
+
+          {activeView === "agents" && (
+          <div className="panel paperclipSync">
+            <div className="panelHead">
+              <div>
+                <h2>Paperclip sync</h2>
+                <p>Owner manifest that aligns Paperclip agents with Zero-Human roles, skills, and MCP tools.</p>
+              </div>
+              <button onClick={syncPaperclipManifest} disabled={busy}>
+                <RefreshCw size={15} /> Sync manifest
+              </button>
+            </div>
+            <div className="syncSummary">
+              <span>{state.paperclipSync.records.filter((record) => record.status === "synced").length} synced</span>
+              <span>{state.paperclipSync.records.filter((record) => record.status === "missing").length} missing</span>
+              <span>{state.paperclipSync.records.filter((record) => record.status === "drifted").length} drifted</span>
+              <span>{state.paperclipSync.paperclipUrl}</span>
+            </div>
+            <div className="paperclipSyncGrid">
+              {state.paperclipSync.records.map((record) => (
+                <article className="syncCard" key={record.agentId}>
+                  <div className="agentTop">
+                    <div>
+                      <strong>{record.desiredName}</strong>
+                      <span>{record.role} · {record.executor} · {record.modelCombo}</span>
+                    </div>
+                    <Status value={record.status} />
+                  </div>
+                  <div className="skillRow">
+                    {record.desiredSkills.slice(0, 4).map((skill) => <span key={skill}>{skill}</span>)}
+                  </div>
+                  <div className="skillRow">
+                    {record.desiredMcpServers.length === 0 && <span>no mcp tools</span>}
+                    {record.desiredMcpServers.slice(0, 4).map((server) => <span key={server.id}>{server.name}</span>)}
+                  </div>
+                  <pre className="runbook">{record.runbook}</pre>
+                  <div className="agentFooter">
+                    <small>{record.desiredHash}{record.lastSyncedAt ? ` · ${new Date(record.lastSyncedAt).toLocaleString()}` : ""}</small>
+                    <button onClick={() => markPaperclipApplied(record.agentId)} disabled={busy || record.status === "synced"}>
+                      <Check size={15} /> Mark applied
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {activeView === "agents" && (
           <form className="panel taskComposer" onSubmit={createTask}>
             <div className="panelHead">
               <div>
@@ -965,9 +1389,11 @@ function App() {
             <div className="panelHead">
               <div>
                 <h2>Repository intake</h2>
-                <p>Clone a Git repository into the Docker workspace.</p>
+                <p>Clone Git repositories and publish ready workspaces to Paperclip.</p>
               </div>
-              <FolderGit2 size={20} />
+              <button onClick={syncPaperclipRepositories} disabled={busy}>
+                <RefreshCw size={15} /> Sync Paperclip
+              </button>
             </div>
             <form className="repoForm" onSubmit={addRepository}>
               <label>
@@ -1059,6 +1485,26 @@ function App() {
                 </article>
               ))}
             </div>
+            <div className="syncSummary">
+              <span>{state.paperclipRepositorySync.repositoriesReady} ready repos</span>
+              <span>{state.paperclipRepositorySync.workspacesSynced} workspaces synced</span>
+              <span>{state.paperclipRepositorySync.issuesLinked} issues linked</span>
+              <span>{state.paperclipRepositorySync.projectId ?? "project pending"}</span>
+            </div>
+            {paperclipRepositorySyncError && <p className="formWarning">{paperclipRepositorySyncError}</p>}
+            {state.paperclipRepositorySync.details.length > 0 && (
+              <div className="paperclipSkillDetails">
+                {state.paperclipRepositorySync.details.map((item) => (
+                  <article className="paperclipSkillRow" key={`${item.repositoryId}-${item.workspaceId ?? item.action}`}>
+                    <div>
+                      <strong>{item.repositoryName}</strong>
+                      <span>{item.path}</span>
+                    </div>
+                    <Status value={`${item.action}${item.issuesLinked ? ` · ${item.issuesLinked} issues` : ""}`} />
+                  </article>
+                ))}
+              </div>
+            )}
             {skillSourceRepositories.length > 0 && (
               <p className="repoHint">{skillSourceRepositories.length} skill source repo hidden from task assignment. Manage them in Memory.</p>
             )}
@@ -1318,6 +1764,78 @@ function App() {
                 ))}
               </article>
             )}
+          </div>
+          )}
+
+          {activeView === "memory" && (
+          <div className="panel paperclipHermesBridge">
+            <div className="panelHead">
+              <div>
+                <h2>Hermes bridge</h2>
+                <p>Inject memory, delegation, and token guardrails into Paperclip agents before Codex runs.</p>
+              </div>
+              <button onClick={syncPaperclipHermesBridge} disabled={busy}>
+                <RefreshCw size={15} /> Sync Hermes
+              </button>
+            </div>
+            <div className="syncSummary">
+              <span>{state.paperclipHermesBridge.protocolSkillSynced ? "protocol synced" : "protocol pending"}</span>
+              <span>{state.paperclipHermesBridge.agentsPatched} agents patched</span>
+              <span>{state.paperclipHermesBridge.agentsScanned} scanned</span>
+              <span>{state.paperclipHermesBridge.memoryNotesWritten} memory notes</span>
+              <span>{state.paperclipHermesBridge.protocolSkillKey}</span>
+            </div>
+            {paperclipHermesBridgeError && <p className="formWarning">{paperclipHermesBridgeError}</p>}
+            <div className="paperclipSkillDetails">
+              {state.paperclipHermesBridge.details.length === 0 && (
+                <div className="empty">No Hermes bridge sync run yet.</div>
+              )}
+              {state.paperclipHermesBridge.details.slice(0, 10).map((item, index) => (
+                <article className="paperclipSkillRow" key={`${item.action}-${item.agentId ?? index}`}>
+                  <div>
+                    <strong>{item.agentName ?? item.action.replaceAll("_", " ")}</strong>
+                    <span>{[item.role, item.reason].filter(Boolean).join(" · ")}</span>
+                  </div>
+                  <Status value={item.action.replace("agent_", "").replace("_ready", "ready")} />
+                </article>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {activeView === "memory" && (
+          <div className="panel paperclipSkillSync">
+            <div className="panelHead">
+              <div>
+                <h2>Paperclip skill sync</h2>
+                <p>Publish Zero-Human registry skills into Paperclip native Skills without duplicating existing entries.</p>
+              </div>
+              <button onClick={syncPaperclipSkills} disabled={busy}>
+                <RefreshCw size={15} /> Sync skills
+              </button>
+            </div>
+            <div className="syncSummary">
+              <span>{state.paperclipSkillSync.registrySkills} registry skills</span>
+              <span>{state.paperclipSkillSync.imported} imported</span>
+              <span>{state.paperclipSkillSync.updated} updated</span>
+              <span>{state.paperclipSkillSync.skipped} skipped</span>
+              <span>{state.paperclipSkillSync.companyId ?? "company pending"}</span>
+            </div>
+            {paperclipSkillSyncError && <p className="formWarning">{paperclipSkillSyncError}</p>}
+            <div className="paperclipSkillDetails">
+              {state.paperclipSkillSync.details.length === 0 && (
+                <div className="empty">No Paperclip skill sync run yet.</div>
+              )}
+              {state.paperclipSkillSync.details.slice(0, 10).map((item) => (
+                <article className="paperclipSkillRow" key={`${item.skill}-${item.paperclipKey ?? item.reason}`}>
+                  <div>
+                    <strong>{item.skill.replaceAll("_", " ")}</strong>
+                    <span>{item.paperclipKey ?? item.reason ?? "zero-human registry"}</span>
+                  </div>
+                  <Status value={item.action} />
+                </article>
+              ))}
+            </div>
           </div>
           )}
 

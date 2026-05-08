@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import cors from "cors";
 import express from "express";
 import { nanoid } from "nanoid";
+import { Pool, type PoolClient } from "pg";
 import {
   agentsFromConfig,
   loadConfig,
@@ -52,6 +54,10 @@ const hiringRequestsPath = path.join(stateDir, "hiring-requests.json");
 const customSkillsPath = path.join(stateDir, "custom-skills.json");
 const mcpRegistryPath = path.join(stateDir, "mcp-servers.json");
 const mcpMarketplacePath = path.join(stateDir, "mcp-marketplace.json");
+const paperclipSyncPath = path.join(stateDir, "paperclip-sync.json");
+const paperclipChatSignalsPath = path.join(stateDir, "paperclip-chat-signals.json");
+const issuePoliciesPath = path.join(stateDir, "agent-issue-policies.json");
+const paperclipDatabaseUrl = process.env.PAPERCLIP_DATABASE_URL ?? process.env.ZH_PAPERCLIP_DATABASE_URL ?? "";
 type ServiceHealth = {
   name: string;
   url: string;
@@ -105,6 +111,39 @@ type SkillImportReport = {
   skipped: Array<{ name: string; sourcePath: string; duplicateOf: string; reason: string }>;
   createdAt: string;
 };
+type PaperclipSkillSyncReport = {
+  id: string;
+  companyId?: string;
+  registrySkills: number;
+  paperclipSkillsBefore: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+  unavailable: boolean;
+  details: Array<{ skill: string; action: "imported" | "updated" | "skipped"; reason?: string; paperclipKey?: string }>;
+  error?: string;
+  createdAt: string;
+};
+type PaperclipRepositorySyncReport = {
+  id: string;
+  companyId?: string;
+  projectId?: string;
+  repositoriesReady: number;
+  workspacesSynced: number;
+  issuesLinked: number;
+  unavailable: boolean;
+  details: Array<{
+    repositoryId: string;
+    repositoryName: string;
+    workspaceId?: string;
+    path: string;
+    action: "created" | "updated" | "skipped";
+    issuesLinked?: number;
+    reason?: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
 type HiringRequestStatus = "pending_approval" | "approved" | "rejected";
 type HiringRequest = {
   id: string;
@@ -155,6 +194,105 @@ type McpMarketplaceItem = Omit<McpServerConfig, "status" | "installedAt" | "upda
   homepage?: string;
   tags: string[];
 };
+type PaperclipCodexMcpServer = {
+  id: string;
+  name: string;
+  category: string;
+  transport: McpTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  permissionMode: McpPermissionMode;
+};
+type PaperclipSyncStatus = "missing" | "drifted" | "synced";
+type PaperclipAgentSyncRecord = {
+  agentId: string;
+  role: AgentRole;
+  desiredName: string;
+  desiredHash: string;
+  desiredSkills: string[];
+  desiredMcpServers: Array<{
+    id: string;
+    name: string;
+    transport: McpTransport;
+    permissionMode: McpPermissionMode;
+  }>;
+  executor: Agent["executor"];
+  modelCombo: string;
+  status: PaperclipSyncStatus;
+  runbook: string;
+  paperclipAgentId?: string;
+  lastSyncedAt?: string;
+  updatedAt: string;
+};
+type PaperclipSyncState = {
+  paperclipUrl: string;
+  updatedAt: string;
+  records: PaperclipAgentSyncRecord[];
+};
+type PaperclipChatSignalReport = {
+  id: string;
+  companyId?: string;
+  scanned: number;
+  detected: number;
+  createdRequests: number;
+  skippedDuplicates: number;
+  processedComments: number;
+  unavailable: boolean;
+  details: Array<{
+    commentId: string;
+    issueKey: string;
+    issueTitle: string;
+    agentName?: string;
+    role?: AgentRole;
+    action: "hiring_request_created" | "duplicate_skipped" | "ignored";
+    reason: string;
+    hiringRequestId?: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
+type PaperclipHermesBridgeReport = {
+  id: string;
+  companyId?: string;
+  protocolSkillKey: string;
+  protocolSkillSynced: boolean;
+  agentsScanned: number;
+  agentsPatched: number;
+  memoryNotesWritten: number;
+  unavailable: boolean;
+  details: Array<{
+    agentId?: string;
+    agentName?: string;
+    role?: string;
+    action: "protocol_synced" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
+    reason: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
+type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
+type AgentIssuePolicy = {
+  role: AgentRole;
+  canCreateIssue: boolean;
+  autoAssign: boolean;
+  allowedTaskTypes: TaskType[];
+  approvalKeywords: string[];
+  triageKeywords: string[];
+  maxPriorityWithoutApproval: 1 | 2 | 3;
+  defaultDecision: AgentIssueDecision;
+  note: string;
+};
+type AgentIssuePolicyEvaluation = {
+  agentId: string;
+  role: AgentRole;
+  decision: AgentIssueDecision;
+  reason: string;
+  suggestedTaskType: TaskType;
+  suggestedAssignee: string;
+  requiresHumanReview: boolean;
+};
 
 function addEvent(event: string, summary: string): void {
   events.unshift({ event, timestamp: new Date().toISOString(), summary });
@@ -195,12 +333,1046 @@ function loadCustomSkills(): Record<string, SkillDefinition> {
 
 const customSkillRegistry: Record<string, SkillDefinition> = loadCustomSkills();
 const skillImportReports: SkillImportReport[] = [];
+let latestPaperclipSkillSync: PaperclipSkillSyncReport | null = null;
+let latestPaperclipRepositorySync: PaperclipRepositorySyncReport | null = null;
+let latestPaperclipChatSignalReport: PaperclipChatSignalReport | null = null;
+let latestPaperclipHermesBridgeReport: PaperclipHermesBridgeReport | null = null;
+let paperclipPool: Pool | null = null;
 
 function activeSkillRegistry(): Record<string, SkillDefinition> {
   return {
     ...(config.skill_registry ?? {}),
     ...customSkillRegistry
   };
+}
+
+function getPaperclipPool(): Pool {
+  if (!paperclipDatabaseUrl) {
+    throw new Error("PAPERCLIP_DATABASE_URL is not configured for Zero-Human.");
+  }
+  paperclipPool ??= new Pool({ connectionString: paperclipDatabaseUrl });
+  return paperclipPool;
+}
+
+function paperclipSkillSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/repo_skill_[a-z0-9]+_/g, "")
+    .replace(/[_\s/]+/g, "-")
+    .replace(/[^a-z0-9-]+/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || `skill-${nanoid(6)}`;
+}
+
+function paperclipSkillName(skillId: string, skill: SkillDefinition): string {
+  return (skill.triggers[0] ?? skillId)
+    .replace(/^repo_skill_[a-z0-9]+_/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function resolveSkillSourcePath(sourcePath?: string): string | null {
+  if (!sourcePath) return null;
+  const [, relativeOrAbsolute] = sourcePath.includes(":") ? sourcePath.split(/:(.*)/s) : ["", sourcePath];
+  const candidate = path.isAbsolute(relativeOrAbsolute)
+    ? relativeOrAbsolute
+    : path.resolve(hostRepoPath, relativeOrAbsolute);
+  const sourceCandidate = path.isAbsolute(relativeOrAbsolute)
+    ? relativeOrAbsolute
+    : path.resolve(sourceRepoPath, relativeOrAbsolute);
+  if (fs.existsSync(candidate)) return candidate;
+  if (fs.existsSync(sourceCandidate)) return sourceCandidate;
+  return null;
+}
+
+function markdownForPaperclipSkill(skillId: string, skill: SkillDefinition): string {
+  const resolvedPath = resolveSkillSourcePath(skill.sourcePath);
+  if (resolvedPath && fs.statSync(resolvedPath).isFile()) {
+    return fs.readFileSync(resolvedPath, "utf8");
+  }
+  const name = paperclipSkillName(skillId, skill);
+  return [
+    "---",
+    `name: ${paperclipSkillSlug(skillId)}`,
+    `description: ${skill.description || `Zero-Human skill for ${skill.category}`}`,
+    "---",
+    "",
+    `# ${name}`,
+    "",
+    skill.description || `Use this Zero-Human managed skill for ${skill.category} work.`,
+    "",
+    "## Role Fit",
+    "",
+    skill.roles.length ? skill.roles.map((role) => `- ${role}`).join("\n") : "- operations",
+    "",
+    "## Triggers",
+    "",
+    skill.triggers.length ? skill.triggers.slice(0, 20).map((trigger) => `- ${trigger}`).join("\n") : "- manual",
+    "",
+    "## Tools",
+    "",
+    (skill.tools ?? []).length ? (skill.tools ?? []).map((tool) => `- ${tool}`).join("\n") : "- codex",
+    "",
+    "## Source",
+    "",
+    `- Zero-Human registry id: ${skillId}`,
+    `- Source: ${skill.source ?? "zero-human"}`,
+    skill.sourcePath ? `- Source path: ${skill.sourcePath}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function zeroHumanPaperclipSkillKey(skillId: string): string {
+  return `zero-human/${paperclipSkillSlug(skillId)}`;
+}
+
+function isAgentRole(value: string): value is AgentRole {
+  return value in roleSkillCatalog;
+}
+
+function fallbackPaperclipSkillName(skillId: string): string {
+  return skillId
+    .replace(/^repo_skill_[a-z0-9]+_/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function fallbackPaperclipSkillMarkdown(skillId: string, role?: AgentRole): string {
+  const slug = paperclipSkillSlug(skillId);
+  const name = fallbackPaperclipSkillName(skillId);
+  return [
+    "---",
+    `name: ${slug}`,
+    `description: Zero-Human role skill${role ? ` for ${role}` : ""}.`,
+    "---",
+    "",
+    `# ${name}`,
+    "",
+    "This skill is managed by Zero-Human Studio and assigned from the role map.",
+    "",
+    "## Role Fit",
+    "",
+    `- ${role ?? "operations"}`,
+    "",
+    "## Trigger",
+    "",
+    `- ${skillId}`,
+    "",
+    "## Operating Rule",
+    "",
+    "Use this skill only when the current task needs this capability. Prefer the Hermes Operating Protocol before broad exploration."
+  ].join("\n");
+}
+
+async function upsertZeroHumanPaperclipSkill(
+  client: PoolClient,
+  companyId: string,
+  skillId: string,
+  syncedAt: string,
+  role?: AgentRole
+): Promise<string> {
+  const registrySkill = activeSkillRegistry()[skillId];
+  const slug = paperclipSkillSlug(skillId);
+  const key = zeroHumanPaperclipSkillKey(skillId);
+  const name = registrySkill ? paperclipSkillName(skillId, registrySkill) : fallbackPaperclipSkillName(skillId);
+  const markdown = registrySkill ? markdownForPaperclipSkill(skillId, registrySkill) : fallbackPaperclipSkillMarkdown(skillId, role);
+  await client.query(
+    `insert into company_skills
+      (company_id, key, slug, name, description, markdown, source_type, source_locator, source_ref, trust_level, compatibility, file_inventory, metadata)
+     values ($1, $2, $3, $4, $5, $6, 'zero_human_registry', $7, $8, 'markdown_only', 'compatible', $9::jsonb, $10::jsonb)
+     on conflict (company_id, key) do update set
+       slug = excluded.slug,
+       name = excluded.name,
+       description = excluded.description,
+       markdown = excluded.markdown,
+       source_type = excluded.source_type,
+       source_locator = excluded.source_locator,
+       source_ref = excluded.source_ref,
+       file_inventory = excluded.file_inventory,
+       metadata = excluded.metadata,
+       updated_at = now()`,
+    [
+      companyId,
+      key,
+      slug,
+      name,
+      registrySkill?.description || `Zero-Human role skill${role ? ` for ${role}` : ""}.`,
+      markdown,
+      registrySkill?.sourcePath ?? registrySkill?.source ?? "zero-human-role-map",
+      skillId,
+      JSON.stringify(registrySkill?.sourcePath ? [{ path: registrySkill.sourcePath, kind: "skill" }] : []),
+      JSON.stringify({
+        zeroHumanSkillId: skillId,
+        category: registrySkill?.category ?? "role",
+        roles: registrySkill?.roles ?? (role ? [role] : []),
+        triggers: registrySkill?.triggers ?? [skillId],
+        tools: registrySkill?.tools ?? [],
+        syncedAt
+      })
+    ]
+  );
+  return key;
+}
+
+async function resolvePaperclipCompanyId(client: PoolClient): Promise<string> {
+  if (process.env.PAPERCLIP_COMPANY_ID) return process.env.PAPERCLIP_COMPANY_ID;
+  const agentResult = await client.query<{ company_id: string }>(
+    "select company_id from agents order by updated_at desc nulls last, created_at desc limit 1"
+  );
+  if (agentResult.rows[0]?.company_id) return agentResult.rows[0].company_id;
+  const companyResult = await client.query<{ id: string }>("select id from companies order by updated_at desc, created_at desc limit 1");
+  if (companyResult.rows[0]?.id) return companyResult.rows[0].id;
+  throw new Error("No Paperclip company found. Complete Paperclip onboarding first.");
+}
+
+async function resolvePaperclipProjectId(client: PoolClient, companyId: string): Promise<string> {
+  if (process.env.PAPERCLIP_PROJECT_ID) return process.env.PAPERCLIP_PROJECT_ID;
+  const projectResult = await client.query<{ id: string }>(
+    "select id from projects where company_id = $1 and archived_at is null order by updated_at desc, created_at desc limit 1",
+    [companyId]
+  );
+  if (projectResult.rows[0]?.id) return projectResult.rows[0].id;
+  throw new Error("No Paperclip project found. Create or open a Paperclip project first.");
+}
+
+async function syncSkillsToPaperclip(): Promise<PaperclipSkillSyncReport> {
+  const report: PaperclipSkillSyncReport = {
+    id: `paperclip_skills_${nanoid(8)}`,
+    registrySkills: Object.keys(activeSkillRegistry()).length,
+    paperclipSkillsBefore: 0,
+    imported: 0,
+    updated: 0,
+    skipped: 0,
+    unavailable: false,
+    details: [],
+    createdAt: new Date().toISOString()
+  };
+  if (!paperclipDatabaseUrl) {
+    report.unavailable = true;
+    report.error = "PAPERCLIP_DATABASE_URL is not configured.";
+    latestPaperclipSkillSync = report;
+    return report;
+  }
+  const client = await getPaperclipPool().connect();
+  try {
+    const companyId = await resolvePaperclipCompanyId(client);
+    report.companyId = companyId;
+    const existingResult = await client.query<{
+      key: string;
+      slug: string;
+      name: string;
+      markdown: string;
+    }>("select key, slug, name, markdown from company_skills where company_id = $1", [companyId]);
+    report.paperclipSkillsBefore = existingResult.rows.length;
+    const existingByKey = new Map(existingResult.rows.map((row) => [row.key, row]));
+    const existingSlugOrName = new Set(
+      existingResult.rows
+        .filter((row) => !row.key.startsWith("zero-human/"))
+        .flatMap((row) => [row.slug.toLowerCase(), row.name.toLowerCase()])
+    );
+    const existingHashes = new Set(
+      existingResult.rows
+        .filter((row) => !row.key.startsWith("zero-human/"))
+        .map((row) => createHash("sha256").update(row.markdown).digest("hex"))
+    );
+
+    for (const [skillId, skill] of Object.entries(activeSkillRegistry()).sort(([a], [b]) => a.localeCompare(b))) {
+      if (skill.status === "disabled") continue;
+      const slug = paperclipSkillSlug(skillId);
+      const key = `zero-human/${slug}`;
+      const name = paperclipSkillName(skillId, skill);
+      const markdown = markdownForPaperclipSkill(skillId, skill);
+      const hash = createHash("sha256").update(markdown).digest("hex");
+      const existing = existingByKey.get(key);
+      if (!existing && (existingSlugOrName.has(slug) || existingSlugOrName.has(name.toLowerCase()) || existingHashes.has(hash))) {
+        report.skipped += 1;
+        report.details.push({ skill: skillId, action: "skipped", reason: "duplicate Paperclip skill", paperclipKey: key });
+        continue;
+      }
+      await client.query(
+        `insert into company_skills
+          (company_id, key, slug, name, description, markdown, source_type, source_locator, source_ref, trust_level, compatibility, file_inventory, metadata)
+         values ($1, $2, $3, $4, $5, $6, 'zero_human_registry', $7, $8, 'markdown_only', 'compatible', $9::jsonb, $10::jsonb)
+         on conflict (company_id, key) do update set
+           slug = excluded.slug,
+           name = excluded.name,
+           description = excluded.description,
+           markdown = excluded.markdown,
+           source_type = excluded.source_type,
+           source_locator = excluded.source_locator,
+           source_ref = excluded.source_ref,
+           file_inventory = excluded.file_inventory,
+           metadata = excluded.metadata,
+           updated_at = now()`,
+        [
+          companyId,
+          key,
+          slug,
+          name,
+          skill.description || `Zero-Human skill for ${skill.category}`,
+          markdown,
+          skill.sourcePath ?? skill.source ?? "zero-human-registry",
+          skillId,
+          JSON.stringify(skill.sourcePath ? [{ path: skill.sourcePath, kind: "skill" }] : []),
+          JSON.stringify({
+            zeroHumanSkillId: skillId,
+            category: skill.category,
+            roles: skill.roles,
+            triggers: skill.triggers,
+            tools: skill.tools ?? [],
+            syncedAt: report.createdAt
+          })
+        ]
+      );
+      if (existing) report.updated += 1;
+      else report.imported += 1;
+      report.details.push({ skill: skillId, action: existing ? "updated" : "imported", paperclipKey: key });
+    }
+    latestPaperclipSkillSync = report;
+    return report;
+  } catch (error) {
+    report.unavailable = true;
+    report.error = (error as Error).message;
+    latestPaperclipSkillSync = report;
+    return report;
+  } finally {
+    client.release();
+  }
+}
+
+function publicPaperclipSkillSyncReport(): PaperclipSkillSyncReport {
+  const report = latestPaperclipSkillSync ?? {
+    id: "paperclip_skills_not_run",
+    registrySkills: Object.keys(activeSkillRegistry()).length,
+    paperclipSkillsBefore: 0,
+    imported: 0,
+    updated: 0,
+    skipped: 0,
+    unavailable: !paperclipDatabaseUrl,
+    details: [],
+    error: paperclipDatabaseUrl ? undefined : "PAPERCLIP_DATABASE_URL is not configured.",
+    createdAt: new Date(0).toISOString()
+  } satisfies PaperclipSkillSyncReport;
+  return {
+    ...report,
+    details: report.details.slice(0, 60)
+  };
+}
+
+const hermesProtocolSkillKey = "zero-human/hermes-operating-protocol";
+const hermesProtocolSkillSlug = "hermes-operating-protocol";
+
+function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
+  const topSkills = memory.skills
+    .slice(0, 12)
+    .map((skill) => `- ${skill.agentId}: ${skill.skill} (${skill.runs} runs, confidence ${skill.confidence})`);
+  const recentNotes = memory.recentNotes
+    .slice(0, 8)
+    .map((note) => `- ${note.agentId}: ${note.note}`);
+  const readyRepos = readyWorkRepositories().slice(0, 8).map((repo) => `- ${repo.name}: ${repo.path} (${repo.branch})`);
+  return [
+    "# Hermes Operating Protocol",
+    "",
+    "Use this skill on every Paperclip run. Hermes is the shared company memory and cost guardrail for Zero-Human.",
+    "",
+    "## Cost discipline",
+    "",
+    "- Start from the issue title, issue body, assigned role, repository workspace, and this protocol. Do not rediscover the whole company from scratch.",
+    "- Before broad exploration, list the minimum facts needed and inspect only the highest-signal files first.",
+    "- Prefer targeted commands such as `pwd`, `ls`, `git status`, `rg`, and small file reads. Avoid repeated full-tree scans.",
+    "- Treat `blocked` as an escalation state, not a stopping state. First diagnose the blocker, then either fix it, delegate it, request a needed role, or ask the owner for one concrete decision.",
+    "- Do not post repeated planning-only comments. Every run should either change state, attach evidence, delegate, request approval, or close/block the issue.",
+    "- A comment that says work will be created later is not completion. If the issue asks for a roadmap, create a Paperclip document or concrete sub-issues in the same run.",
+    "- Only set blocked when there is a real external blocker after diagnosis. If the blocker can be handled by another role, create or request that agent and delegate instead of stopping.",
+    "- If Paperclip creates a recovery blocker, resolve or explain that blocker first, then continue the original issue. Do not keep the original issue blocked only because a previous run missed disposition.",
+    "- When blocked by missing repo, missing credentials, unclear owner, or missing role, produce one concrete recovery action: verify the expected path/secret/owner, create a child issue for the right role, or emit `ZH_ESCALATION` for hiring.",
+    "",
+    "## Required Paperclip disposition",
+    "",
+    "- For roadmap/planning work: attach a document or create child issues, then set disposition to `in_review` or `done`.",
+    "- For implementation work: attach changed files or evidence, then set disposition to `in_review` or `done`.",
+    "- For blocked work: name the missing owner/path/credential, record what was checked, and set disposition to `blocked` only with a concrete unblocker or `ZH_ESCALATION`.",
+    "- For delegated work: create child issues with assignees and set disposition to `delegated` or `in_review`.",
+    "",
+    "## Required output markers",
+    "",
+    "When work finishes, add a concise comment using this exact shape so Hermes can learn:",
+    "",
+    "```text",
+    "ZH_OUTCOME:",
+    "status: done|blocked|in_review|delegated",
+    "summary: <one or two sentences>",
+    "files: <comma separated files or none>",
+    "skills_used: <comma separated skills>",
+    "next: <clear next owner/action or none>",
+    "```",
+    "",
+    "When a new employee/agent is needed, add:",
+    "",
+    "```text",
+    "ZH_ESCALATION:",
+    "type: hire_agent",
+    "role: <role id or title>",
+    "reason: <why current agent cannot continue>",
+    "handoff: <first concrete task for the new agent>",
+    "```",
+    "",
+    "If the current agent has permission to create agents, create the needed agent directly and then delegate a child issue. Do not wait for manual owner input unless budget, credentials, or business direction is required.",
+    "",
+    "## Current Hermes memory snapshot",
+    "",
+    topSkills.length ? topSkills.join("\n") : "- No learned skills yet.",
+    "",
+    "## Recent memory notes",
+    "",
+    recentNotes.length ? recentNotes.join("\n") : "- No recent Hermes notes yet.",
+    "",
+    "## Ready work repositories",
+    "",
+    readyRepos.length ? readyRepos.join("\n") : "- No ready work repositories synced yet."
+  ].join("\n");
+}
+
+async function rememberInHermes(agentId: string, note: string): Promise<boolean> {
+  const brainUrl = config.infrastructure.services?.brain_url;
+  if (!brainUrl) return false;
+  try {
+    const response = await fetch(`${brainUrl.replace(/\/$/, "")}/api/memory/remember`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId, note })
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function paperclipAdapterConfig(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function findZeroHumanAgentForPaperclipAgent(row: { name: string; role: string }): Agent | undefined {
+  const normalizedName = slug(row.name);
+  const normalizedRole = slug(row.role);
+  return Array.from(agents.values()).find((agent) =>
+    slug(agent.id) === normalizedName ||
+    slug(agent.role) === normalizedRole ||
+    slug(agent.id) === normalizedRole
+  );
+}
+
+function paperclipNativeDesiredSkillsForRole(row: { name: string; role: string }): string[] {
+  const normalizedName = slug(row.name);
+  const normalizedRole = slug(row.role);
+  if (normalizedName === "ceo" || normalizedRole === "ceo") {
+    return [
+      "paperclipai/paperclip/diagnose-why-work-stopped",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/para-memory-files"
+    ];
+  }
+  return [];
+}
+
+function codexMcpServerPayload(server: McpServerConfig): PaperclipCodexMcpServer {
+  return {
+    id: server.id,
+    name: server.name,
+    category: server.category,
+    transport: server.transport,
+    command: server.command,
+    args: server.args,
+    url: server.url,
+    env: server.env,
+    permissionMode: server.permissions.mode
+  };
+}
+
+function enabledMcpServersForAgent(agent: Agent): PaperclipCodexMcpServer[] {
+  return publicMcpServers()
+    .filter((server) => server.status === "enabled" && server.roles.includes(agent.role))
+    .map(codexMcpServerPayload)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function paperclipNativeMcpServersForRole(row: { name: string; role: string }): PaperclipCodexMcpServer[] {
+  const normalizedName = slug(row.name);
+  const normalizedRole = slug(row.role);
+  if (normalizedName !== "ceo" && normalizedRole !== "ceo") return [];
+
+  const sequentialThinking = publicMcpServers().find(
+    (server) => server.id === "sequential-thinking" && server.status === "enabled",
+  );
+  return sequentialThinking ? [codexMcpServerPayload(sequentialThinking)] : [];
+}
+
+async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeReport> {
+  const report: PaperclipHermesBridgeReport = {
+    id: `paperclip_hermes_${nanoid(8)}`,
+    protocolSkillKey: hermesProtocolSkillKey,
+    protocolSkillSynced: false,
+    agentsScanned: 0,
+    agentsPatched: 0,
+    memoryNotesWritten: 0,
+    unavailable: false,
+    details: [],
+    createdAt: new Date().toISOString()
+  };
+  if (!paperclipDatabaseUrl) {
+    report.unavailable = true;
+    report.error = "PAPERCLIP_DATABASE_URL is not configured.";
+    latestPaperclipHermesBridgeReport = report;
+    return report;
+  }
+
+  const memory = await brainMemoryStatus();
+  const markdown = hermesOperatingProtocolMarkdown(memory);
+  const client = await getPaperclipPool().connect();
+  try {
+    const companyId = await resolvePaperclipCompanyId(client);
+    report.companyId = companyId;
+    await client.query("begin");
+    await client.query(
+      `insert into company_skills
+        (company_id, key, slug, name, description, markdown, source_type, source_locator, source_ref, trust_level, compatibility, file_inventory, metadata)
+       values ($1, $2, $3, $4, $5, $6, 'zero_human_hermes', 'zero-human-hermes-bridge', 'hermes-operating-protocol', 'markdown_only', 'compatible', $7::jsonb, $8::jsonb)
+       on conflict (company_id, key) do update set
+         slug = excluded.slug,
+         name = excluded.name,
+         description = excluded.description,
+         markdown = excluded.markdown,
+         source_type = excluded.source_type,
+         source_locator = excluded.source_locator,
+         source_ref = excluded.source_ref,
+         file_inventory = excluded.file_inventory,
+         metadata = excluded.metadata,
+         updated_at = now()`,
+      [
+        companyId,
+        hermesProtocolSkillKey,
+        hermesProtocolSkillSlug,
+        "Hermes Operating Protocol",
+        "Shared Zero-Human memory, delegation, and token guardrails for Paperclip agents.",
+        markdown,
+        JSON.stringify([{ path: "zero-human/hermes-operating-protocol", kind: "generated-skill" }]),
+        JSON.stringify({
+          zeroHumanBridge: true,
+          memoryOk: memory.ok,
+          memoryEntries: memory.entries,
+          memoryOutcomes: memory.outcomes,
+          syncedAt: report.createdAt
+        })
+      ]
+    );
+    report.protocolSkillSynced = true;
+    report.details.push({ action: "protocol_synced", reason: "Hermes protocol skill upserted in Paperclip." });
+
+    const agentResult = await client.query<{ id: string; name: string; role: string; adapter_config: unknown }>(
+      "select id::text, name, role, adapter_config from agents where company_id = $1 order by created_at asc",
+      [companyId]
+    );
+    report.agentsScanned = agentResult.rows.length;
+    for (const row of agentResult.rows) {
+      const configValue = paperclipAdapterConfig(row.adapter_config);
+      const syncValue = paperclipAdapterConfig(configValue.paperclipSkillSync);
+      const existingDesired = Array.isArray(syncValue.desiredSkills)
+        ? syncValue.desiredSkills.map(String).filter(Boolean)
+        : [];
+      const zeroHumanAgent = findZeroHumanAgentForPaperclipAgent(row);
+      const zeroHumanSkillKeys: string[] = [];
+      if (zeroHumanAgent) {
+        for (const skillId of desiredSkillsForAgentProfile(zeroHumanAgent)) {
+          zeroHumanSkillKeys.push(await upsertZeroHumanPaperclipSkill(client, companyId, skillId, report.createdAt, zeroHumanAgent.role));
+        }
+      }
+      const nativeSkillKeys = paperclipNativeDesiredSkillsForRole(row);
+      const desiredMcpServers = zeroHumanAgent
+        ? enabledMcpServersForAgent(zeroHumanAgent)
+        : paperclipNativeMcpServersForRole(row);
+      const desiredSkills = Array.from(new Set([
+        hermesProtocolSkillKey,
+        ...nativeSkillKeys,
+        ...zeroHumanSkillKeys,
+        ...existingDesired
+      ]));
+      const existingMcpSync = paperclipAdapterConfig(configValue.zeroHumanMcpSync);
+      const existingMcpServers = Array.isArray(existingMcpSync.servers)
+        ? existingMcpSync.servers
+        : [];
+      const desiredUnchanged =
+        JSON.stringify(existingDesired) === JSON.stringify(desiredSkills)
+        && JSON.stringify(existingMcpServers) === JSON.stringify(desiredMcpServers);
+      if (desiredUnchanged) {
+        report.details.push({
+          agentId: row.id,
+          agentName: row.name,
+          role: row.role,
+          action: "agent_already_ready",
+          reason: zeroHumanAgent
+            ? `Agent already has Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role skills, and ${desiredMcpServers.length} MCP servers selected.`
+            : `Agent already has Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers selected. No matching Zero-Human role was found for extra skill mapping.`
+        });
+        continue;
+      }
+      const nextConfig = {
+        ...configValue,
+        paperclipSkillSync: {
+          ...syncValue,
+          desiredSkills
+        },
+        zeroHumanMcpSync: {
+          ...existingMcpSync,
+          source: "zero-human-role-map",
+          syncedAt: report.createdAt,
+          servers: desiredMcpServers
+        }
+      };
+      await client.query(
+        "update agents set adapter_config = $3::jsonb, updated_at = now() where company_id = $1 and id = $2",
+        [companyId, row.id, JSON.stringify(nextConfig)]
+      );
+      report.agentsPatched += 1;
+      report.details.push({
+        agentId: row.id,
+        agentName: row.name,
+        role: row.role,
+        action: "agent_patched",
+        reason: zeroHumanAgent
+          ? `Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role skills, and ${desiredMcpServers.length} MCP servers selected from ${zeroHumanAgent.id}.`
+          : `Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers selected. No matching Zero-Human role was found for extra skill mapping.`
+      });
+    }
+    await client.query("commit");
+
+    if (await rememberInHermes("zero_human_owner", `Paperclip Hermes bridge synced: ${report.agentsPatched}/${report.agentsScanned} agents patched with ${hermesProtocolSkillKey}.`)) {
+      report.memoryNotesWritten += 1;
+      report.details.push({ action: "memory_written", reason: "Bridge sync note persisted in Hermes memory." });
+    }
+    latestPaperclipHermesBridgeReport = report;
+    return report;
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    report.unavailable = true;
+    report.error = (error as Error).message;
+    latestPaperclipHermesBridgeReport = report;
+    return report;
+  } finally {
+    client.release();
+  }
+}
+
+function publicPaperclipHermesBridgeReport(): PaperclipHermesBridgeReport {
+  const report = latestPaperclipHermesBridgeReport ?? {
+    id: "paperclip_hermes_not_synced",
+    protocolSkillKey: hermesProtocolSkillKey,
+    protocolSkillSynced: false,
+    agentsScanned: 0,
+    agentsPatched: 0,
+    memoryNotesWritten: 0,
+    unavailable: !paperclipDatabaseUrl,
+    details: [],
+    error: paperclipDatabaseUrl ? undefined : "PAPERCLIP_DATABASE_URL is not configured.",
+    createdAt: new Date(0).toISOString()
+  } satisfies PaperclipHermesBridgeReport;
+  return {
+    ...report,
+    details: report.details.slice(0, 60)
+  };
+}
+
+function readyWorkRepositories(): RegisteredRepository[] {
+  return Array.from(repositories.values())
+    .filter((repository) => (repository.sourceKind ?? "work") === "work" && repository.status === "ready")
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function repositorySearchTokens(repository: RegisteredRepository): string[] {
+  const repoNameFromUrl = repository.url.split(/[/:]/).pop()?.replace(/\.git$/i, "");
+  return Array.from(new Set([repository.id, repository.name, repoNameFromUrl].filter(Boolean).map((value) => value!.toLowerCase())));
+}
+
+async function syncRepositoriesToPaperclip(): Promise<PaperclipRepositorySyncReport> {
+  const readyRepositories = readyWorkRepositories();
+  const report: PaperclipRepositorySyncReport = {
+    id: `paperclip_repositories_${nanoid(8)}`,
+    repositoriesReady: readyRepositories.length,
+    workspacesSynced: 0,
+    issuesLinked: 0,
+    unavailable: false,
+    details: [],
+    createdAt: new Date().toISOString()
+  };
+  if (!paperclipDatabaseUrl) {
+    report.unavailable = true;
+    report.error = "PAPERCLIP_DATABASE_URL is not configured.";
+    latestPaperclipRepositorySync = report;
+    return report;
+  }
+  const client = await getPaperclipPool().connect();
+  try {
+    const companyId = await resolvePaperclipCompanyId(client);
+    const projectId = await resolvePaperclipProjectId(client, companyId);
+    report.companyId = companyId;
+    report.projectId = projectId;
+    if (readyRepositories.length === 0) {
+      latestPaperclipRepositorySync = report;
+      return report;
+    }
+
+    await client.query("begin");
+    const primaryRepository = readyRepositories[0];
+    for (const repository of readyRepositories) {
+      const sharedWorkspaceKey = `zero-human:${repository.id}`;
+      const metadata = {
+        source: "zero-human",
+        repositoryId: repository.id,
+        repositoryName: repository.name,
+        syncedAt: report.createdAt
+      };
+      const existing = await client.query<{ id: string }>(
+        "select id from project_workspaces where company_id = $1 and shared_workspace_key = $2 limit 1",
+        [companyId, sharedWorkspaceKey]
+      );
+      const isPrimary = repository.id === primaryRepository.id;
+      let workspaceId = existing.rows[0]?.id;
+      let action: "created" | "updated" = "updated";
+      if (workspaceId) {
+        await client.query(
+          `update project_workspaces
+             set project_id = $3,
+                 name = $4,
+                 cwd = $5,
+                 repo_url = $6,
+                 repo_ref = $7,
+                 default_ref = $7,
+                 source_type = 'zero_human_repository',
+                 visibility = 'default',
+                 is_primary = $8,
+                 metadata = $9::jsonb,
+                 updated_at = now()
+           where company_id = $1 and shared_workspace_key = $2`,
+          [companyId, sharedWorkspaceKey, projectId, repository.name, repository.path, repository.url, repository.branch, isPrimary, JSON.stringify(metadata)]
+        );
+      } else {
+        action = "created";
+        const created = await client.query<{ id: string }>(
+          `insert into project_workspaces
+            (company_id, project_id, name, cwd, repo_url, repo_ref, default_ref, metadata, is_primary, source_type, shared_workspace_key)
+           values ($1, $2, $3, $4, $5, $6, $6, $7::jsonb, $8, 'zero_human_repository', $9)
+           returning id`,
+          [companyId, projectId, repository.name, repository.path, repository.url, repository.branch, JSON.stringify(metadata), isPrimary, sharedWorkspaceKey]
+        );
+        workspaceId = created.rows[0].id;
+      }
+      if (isPrimary) {
+        await client.query("update project_workspaces set is_primary = false where company_id = $1 and project_id = $2 and id <> $3", [
+          companyId,
+          projectId,
+          workspaceId
+        ]);
+        await client.query(
+          `update projects
+             set execution_workspace_policy = jsonb_build_object(
+                   'enabled', true,
+                   'defaultMode', 'shared_workspace',
+                   'defaultProjectWorkspaceId', $3::text,
+                   'workspaceStrategy', jsonb_build_object('type', 'project_primary')
+                 ),
+                 updated_at = now()
+           where company_id = $1 and id = $2`,
+          [companyId, projectId, workspaceId]
+        );
+      }
+
+      const tokens = repositorySearchTokens(repository);
+      const linked = await client.query(
+        `with recursive matched_issues as (
+           select id
+             from issues
+            where company_id = $1
+              and project_id = $2
+              and exists (
+                select 1 from unnest($3::text[]) token
+                where lower(coalesce(title, '') || ' ' || coalesce(description, '')) like '%' || token || '%'
+              )
+           union
+           select child.id
+             from issues child
+             join matched_issues parent on child.parent_id = parent.id
+            where child.company_id = $1
+              and child.project_id = $2
+         )
+         update issues
+           set project_workspace_id = $4,
+               execution_workspace_id = null,
+               execution_workspace_preference = 'shared_workspace',
+               execution_workspace_settings = jsonb_build_object('mode', 'shared_workspace'),
+               updated_at = now()
+         where company_id = $1
+           and project_id = $2
+           and (
+             project_workspace_id is null
+             or project_workspace_id <> $4
+             or execution_workspace_preference is distinct from 'shared_workspace'
+           )
+           and id in (select id from matched_issues)`,
+        [companyId, projectId, tokens, workspaceId]
+      );
+      const issueCount = linked.rowCount ?? 0;
+      report.workspacesSynced += 1;
+      report.issuesLinked += issueCount;
+      report.details.push({
+        repositoryId: repository.id,
+        repositoryName: repository.name,
+        workspaceId,
+        path: repository.path,
+        action,
+        issuesLinked: issueCount
+      });
+    }
+    await client.query("commit");
+    latestPaperclipRepositorySync = report;
+    return report;
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    report.unavailable = true;
+    report.error = (error as Error).message;
+    latestPaperclipRepositorySync = report;
+    return report;
+  } finally {
+    client.release();
+  }
+}
+
+function publicPaperclipRepositorySyncReport(): PaperclipRepositorySyncReport {
+  const report = latestPaperclipRepositorySync ?? {
+    id: "paperclip_repositories_not_run",
+    repositoriesReady: readyWorkRepositories().length,
+    workspacesSynced: 0,
+    issuesLinked: 0,
+    unavailable: !paperclipDatabaseUrl,
+    details: [],
+    error: paperclipDatabaseUrl ? undefined : "PAPERCLIP_DATABASE_URL is not configured.",
+    createdAt: new Date(0).toISOString()
+  } satisfies PaperclipRepositorySyncReport;
+  return {
+    ...report,
+    details: report.details.slice(0, 20)
+  };
+}
+
+function loadProcessedPaperclipChatSignals(): Set<string> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(paperclipChatSignalsPath, "utf8")) as { processedCommentIds?: string[] };
+    return new Set(raw.processedCommentIds ?? []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveProcessedPaperclipChatSignals(processedCommentIds: Set<string>): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    paperclipChatSignalsPath,
+    JSON.stringify({ processedCommentIds: Array.from(processedCommentIds), updatedAt: new Date().toISOString() }, null, 2)
+  );
+}
+
+function inferRoleFromPaperclipChat(text: string): AgentRole | null {
+  const normalized = text.toLowerCase();
+  const roleMatches: Array<[AgentRole, RegExp]> = [
+    ["cto", /\b(cto|chief technology|technical lead|tech lead)\b/],
+    ["backend", /\b(backend|api|database|server)\b/],
+    ["frontend", /\b(frontend|front end|react|ui engineer|web engineer)\b/],
+    ["devops", /\b(devops|deployment|docker|infra|ci\/cd|ci cd)\b/],
+    ["qa", /\b(qa|tester|quality|e2e|regression)\b/],
+    ["product", /\b(product manager|pm|prd|roadmap)\b/],
+    ["design", /\b(designer|design|ux|ui\/ux|brand)\b/],
+    ["marketing", /\b(marketing|growth|seo|campaign)\b/],
+    ["support", /\b(support|customer success|cs|customer)\b/],
+    ["finance", /\b(finance|budget|accounting|unit economics)\b/],
+    ["operations", /\b(operations|ops|process|backoffice)\b/],
+    ["research", /\b(research|market research|analyst)\b/],
+    ["legal", /\b(legal|license|privacy|compliance)\b/]
+  ];
+  return roleMatches.find(([, pattern]) => pattern.test(normalized))?.[0] ?? null;
+}
+
+function extractPaperclipHiringSignal(body: string): { role: AgentRole; reason: string } | null {
+  const normalized = body.toLowerCase();
+  const explicitHiringIntent =
+    /\b(hire|hiring|add|create|butuh|tambah)\s+(a\s+|an\s+|the\s+)?[a-z ]{0,40}\b(agent|role|engineer|designer|marketer|manager|cto)\b/.test(normalized) ||
+    /\b(no|missing|need|needs|needed)\s+(a\s+|an\s+|the\s+)?[a-z ]{0,40}\b(agent|role|engineer|designer|marketer|manager|cto)\b/.test(normalized) ||
+    /\b(cto|designer|marketer|backend engineer|frontend engineer|qa engineer|devops engineer)\s+(agent\s+)?(is\s+)?(missing|needed|required|pending approval)\b/.test(normalized) ||
+    /\b(hire request|hiring request|approval to hire)\b/.test(normalized);
+  const role = inferRoleFromPaperclipChat(normalized);
+  if (!explicitHiringIntent) return null;
+  if (!role) return null;
+  return { role, reason: body.replace(/\s+/g, " ").trim().slice(0, 500) };
+}
+
+function publicPaperclipChatSignalReport(): PaperclipChatSignalReport {
+  const report = latestPaperclipChatSignalReport ?? {
+    id: "paperclip_chat_not_scanned",
+    scanned: 0,
+    detected: 0,
+    createdRequests: 0,
+    skippedDuplicates: 0,
+    processedComments: loadProcessedPaperclipChatSignals().size,
+    unavailable: !paperclipDatabaseUrl,
+    details: [],
+    error: paperclipDatabaseUrl ? undefined : "PAPERCLIP_DATABASE_URL is not configured.",
+    createdAt: new Date(0).toISOString()
+  } satisfies PaperclipChatSignalReport;
+  return {
+    ...report,
+    details: report.details.slice(0, 20)
+  };
+}
+
+async function scanPaperclipChatSignals(): Promise<PaperclipChatSignalReport> {
+  const processedCommentIds = loadProcessedPaperclipChatSignals();
+  const report: PaperclipChatSignalReport = {
+    id: `paperclip_chat_${nanoid(8)}`,
+    scanned: 0,
+    detected: 0,
+    createdRequests: 0,
+    skippedDuplicates: 0,
+    processedComments: processedCommentIds.size,
+    unavailable: false,
+    details: [],
+    createdAt: new Date().toISOString()
+  };
+  if (!paperclipDatabaseUrl) {
+    report.unavailable = true;
+    report.error = "PAPERCLIP_DATABASE_URL is not configured.";
+    latestPaperclipChatSignalReport = report;
+    return report;
+  }
+  const client = await getPaperclipPool().connect();
+  try {
+    const companyId = await resolvePaperclipCompanyId(client);
+    report.companyId = companyId;
+    const comments = await client.query<{
+      comment_id: string;
+      issue_key: string;
+      issue_title: string;
+      body: string;
+      agent_name: string | null;
+    }>(
+      `select c.id::text as comment_id,
+              coalesce(i.identifier, 'issue-' || i.issue_number::text, i.id::text) as issue_key,
+              i.title as issue_title,
+              c.body,
+              a.name as agent_name
+         from issue_comments c
+         join issues i on i.id = c.issue_id
+         left join agents a on a.id = c.author_agent_id
+        where c.company_id = $1
+          and c.author_agent_id is not null
+          and c.body is not null
+        order by c.created_at desc
+        limit 250`,
+      [companyId]
+    );
+    report.scanned = comments.rows.length;
+    for (const comment of comments.rows.reverse()) {
+      if (processedCommentIds.has(comment.comment_id)) continue;
+      const signal = extractPaperclipHiringSignal(comment.body);
+      if (!signal) continue;
+      report.detected += 1;
+      const wantsAdditionalAgent = /\b(another|additional|second|extra|more|tambahan|lagi)\b/i.test(comment.body);
+      const existingRoleAgent = Array.from(agents.values()).find((agent) => agent.role === signal.role);
+      if (existingRoleAgent && !wantsAdditionalAgent) {
+        processedCommentIds.add(comment.comment_id);
+        report.details.push({
+          commentId: comment.comment_id,
+          issueKey: comment.issue_key,
+          issueTitle: comment.issue_title,
+          agentName: comment.agent_name ?? undefined,
+          role: signal.role,
+          action: "ignored",
+          reason: `${existingRoleAgent.id} already covers ${signal.role}.`
+        });
+        continue;
+      }
+      const alreadyRequested = Array.from(hiringRequests.values()).some((request) =>
+        request.source === "paperclip" &&
+        request.status === "pending_approval" &&
+        (request.description?.includes(comment.comment_id) || request.suggestedRole === signal.role)
+      );
+      processedCommentIds.add(comment.comment_id);
+      if (alreadyRequested) {
+        report.skippedDuplicates += 1;
+        report.details.push({
+          commentId: comment.comment_id,
+          issueKey: comment.issue_key,
+          issueTitle: comment.issue_title,
+          agentName: comment.agent_name ?? undefined,
+          role: signal.role,
+          action: "duplicate_skipped",
+          reason: "A matching Paperclip hiring request is already pending."
+        });
+        continue;
+      }
+      const now = new Date().toISOString();
+      const mapped = mapHireRequest({
+        title: `${signal.role.toUpperCase()} requested from Paperclip chat`,
+        department: signal.role,
+        requestedRole: signal.role,
+        description: [
+          `Paperclip ${comment.issue_key}: ${comment.issue_title}`,
+          `Agent: ${comment.agent_name ?? "unknown"}`,
+          `Signal: ${signal.reason}`,
+          `Paperclip comment: ${comment.comment_id}`
+        ].join("\n")
+      });
+      const request: HiringRequest = {
+        id: `hire_${nanoid(8)}`,
+        source: "paperclip",
+        status: "pending_approval",
+        createdAt: now,
+        updatedAt: now,
+        ...mapped
+      };
+      hiringRequests.set(request.id, request);
+      report.createdRequests += 1;
+      report.details.push({
+        commentId: comment.comment_id,
+        issueKey: comment.issue_key,
+        issueTitle: comment.issue_title,
+        agentName: comment.agent_name ?? undefined,
+        role: signal.role,
+        action: "hiring_request_created",
+        reason: signal.reason,
+        hiringRequestId: request.id
+      });
+    }
+    report.processedComments = processedCommentIds.size;
+    saveProcessedPaperclipChatSignals(processedCommentIds);
+    if (report.createdRequests > 0) saveHiringRequests();
+    latestPaperclipChatSignalReport = report;
+    return report;
+  } catch (error) {
+    report.unavailable = true;
+    report.error = (error as Error).message;
+    latestPaperclipChatSignalReport = report;
+    return report;
+  } finally {
+    client.release();
+  }
 }
 
 function saveCustomSkills(): void {
@@ -288,6 +1460,296 @@ const taskSkillCatalog: Record<TaskType, string[]> = {
   test: ["testing", "test_automation", "regression_testing"],
   deploy: ["deployment", "ci_cd", "release_validation"]
 };
+
+const highRiskIssueKeywords = [
+  "deploy",
+  "release",
+  "production",
+  "payment",
+  "billing",
+  "invoice",
+  "security",
+  "secret",
+  "credential",
+  "delete",
+  "drop",
+  "migration",
+  "privacy",
+  "legal",
+  "token",
+  "ssh key"
+];
+
+const triageIssueKeywords = [
+  "unclear",
+  "unknown",
+  "investigate",
+  "research",
+  "follow up",
+  "customer",
+  "complaint",
+  "priority"
+];
+
+const defaultIssuePolicies: Record<AgentRole, AgentIssuePolicy> = {
+  cto: {
+    role: "cto",
+    canCreateIssue: true,
+    autoAssign: true,
+    allowedTaskTypes: ["architecture", "coding", "review", "test", "deploy"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "auto_assign",
+    note: "CTO may create and route engineering issues, but high-risk work still requires owner review."
+  },
+  frontend: {
+    role: "frontend",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["coding", "review", "test"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Frontend agents may create implementation and QA follow-up issues; routing stays triaged."
+  },
+  backend: {
+    role: "backend",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["coding", "review", "test"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Backend agents may raise code, API, and database issues; migrations require approval."
+  },
+  qa: {
+    role: "qa",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["review", "test"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "QA agents create bug and validation issues; execution is assigned after triage."
+  },
+  devops: {
+    role: "devops",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["review", "test", "deploy"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 1,
+    defaultDecision: "approval_required",
+    note: "DevOps can raise infrastructure work, but deploy and production changes need approval."
+  },
+  product: {
+    role: "product",
+    canCreateIssue: true,
+    autoAssign: true,
+    allowedTaskTypes: ["architecture", "review", "test"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "auto_assign",
+    note: "Product can convert roadmap and customer needs into Paperclip issues."
+  },
+  design: {
+    role: "design",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["architecture", "review"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Design can open UX and brand work, then route to product or frontend."
+  },
+  marketing: {
+    role: "marketing",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["architecture", "review"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Marketing can create campaign and content issues; engineering work is triaged."
+  },
+  sales: {
+    role: "sales",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["architecture", "review"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Sales can raise customer opportunity and proposal issues."
+  },
+  support: {
+    role: "support",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["review", "test"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Support can create bug reports and customer follow-ups for triage."
+  },
+  finance: {
+    role: "finance",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["architecture", "review"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 1,
+    defaultDecision: "approval_required",
+    note: "Finance can raise budget and vendor issues; spending changes require approval."
+  },
+  operations: {
+    role: "operations",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["architecture", "review", "test"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Operations can create process and backoffice issues."
+  },
+  research: {
+    role: "research",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["architecture", "review"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 2,
+    defaultDecision: "triage",
+    note: "Research can create discovery issues that feed product and technical planning."
+  },
+  legal: {
+    role: "legal",
+    canCreateIssue: true,
+    autoAssign: false,
+    allowedTaskTypes: ["review"],
+    approvalKeywords: highRiskIssueKeywords,
+    triageKeywords: triageIssueKeywords,
+    maxPriorityWithoutApproval: 1,
+    defaultDecision: "approval_required",
+    note: "Legal can create review issues; execution requires human approval."
+  }
+};
+
+function loadIssuePolicies(): Map<AgentRole, AgentIssuePolicy> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(issuePoliciesPath, "utf8")) as AgentIssuePolicy[];
+    return new Map(raw.map((policy) => [policy.role, { ...defaultIssuePolicies[policy.role], ...policy }]));
+  } catch {
+    return new Map(Object.values(defaultIssuePolicies).map((policy) => [policy.role, policy]));
+  }
+}
+
+const issuePolicies = loadIssuePolicies();
+
+function saveIssuePolicies(): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(issuePoliciesPath, JSON.stringify(Array.from(issuePolicies.values()), null, 2));
+}
+
+function publicIssuePolicies(): AgentIssuePolicy[] {
+  return Array.from(issuePolicies.values()).sort((a, b) => a.role.localeCompare(b.role));
+}
+
+function inferIssueTaskType(title: string, description: string, requestedType?: TaskType): TaskType {
+  if (requestedType) return requestedType;
+  const text = `${title} ${description}`.toLowerCase();
+  if (/\b(deploy|release|container|docker|ci|staging|production)\b/.test(text)) return "deploy";
+  if (/\b(test|qa|e2e|regression|validate|bug)\b/.test(text)) return "test";
+  if (/\b(review|audit|security|risk|legal)\b/.test(text)) return "review";
+  if (/\b(plan|architecture|roadmap|prd|design)\b/.test(text)) return "architecture";
+  return "coding";
+}
+
+function evaluateAgentIssuePolicy(input: {
+  agentId: string;
+  title: string;
+  description?: string;
+  type?: TaskType;
+  priority?: 1 | 2 | 3;
+}): AgentIssuePolicyEvaluation {
+  const agent = agents.get(input.agentId);
+  if (!agent) throw new Error(`Unknown agent ${input.agentId}`);
+  const policy = issuePolicies.get(agent.role) ?? defaultIssuePolicies[agent.role];
+  const title = input.title.trim();
+  const description = input.description?.trim() ?? "";
+  const type = inferIssueTaskType(title, description, input.type);
+  const priority = input.priority ?? 2;
+  const lowered = `${title} ${description}`.toLowerCase();
+  const highRiskHit = policy.approvalKeywords.find((keyword) => lowered.includes(keyword.toLowerCase()));
+  const triageHit = policy.triageKeywords.find((keyword) => lowered.includes(keyword.toLowerCase()));
+
+  if (!policy.canCreateIssue) {
+    return {
+      agentId: agent.id,
+      role: agent.role,
+      decision: "blocked",
+      reason: "This role is not allowed to create issues.",
+      suggestedTaskType: type,
+      suggestedAssignee: agent.id,
+      requiresHumanReview: true
+    };
+  }
+  if (!policy.allowedTaskTypes.includes(type)) {
+    return {
+      agentId: agent.id,
+      role: agent.role,
+      decision: "triage",
+      reason: `${agent.role} can create issues, but ${type} needs routing by owner/CEO/PM.`,
+      suggestedTaskType: type,
+      suggestedAssignee: agent.id,
+      requiresHumanReview: true
+    };
+  }
+  if (highRiskHit || priority > policy.maxPriorityWithoutApproval) {
+    return {
+      agentId: agent.id,
+      role: agent.role,
+      decision: "approval_required",
+      reason: highRiskHit ? `Matched high-risk keyword '${highRiskHit}'.` : `Priority P${priority} exceeds this role approval limit.`,
+      suggestedTaskType: type,
+      suggestedAssignee: agent.id,
+      requiresHumanReview: true
+    };
+  }
+  if (triageHit || !policy.autoAssign) {
+    return {
+      agentId: agent.id,
+      role: agent.role,
+      decision: "triage",
+      reason: triageHit ? `Matched triage keyword '${triageHit}'.` : "This role creates issues into triage by default.",
+      suggestedTaskType: type,
+      suggestedAssignee: agent.id,
+      requiresHumanReview: true
+    };
+  }
+  return {
+    agentId: agent.id,
+    role: agent.role,
+    decision: policy.defaultDecision,
+    reason: policy.note,
+    suggestedTaskType: type,
+    suggestedAssignee: agent.id,
+    requiresHumanReview: policy.defaultDecision !== "auto_assign"
+  };
+}
 
 function loadHiringRequests(): Map<string, HiringRequest> {
   try {
@@ -592,6 +2054,140 @@ function mcpManifestForAgent(agent: Agent): string {
   return ["MCP tools assigned to this role:", ...rows].join("\n");
 }
 
+function paperclipUrl(): string {
+  return config.infrastructure.services?.hr_url?.replace(/\/$/, "") ?? "http://paperclip:3100";
+}
+
+function loadPaperclipSyncState(): PaperclipSyncState {
+  try {
+    const raw = JSON.parse(fs.readFileSync(paperclipSyncPath, "utf8")) as Partial<PaperclipSyncState>;
+    return {
+      paperclipUrl: raw.paperclipUrl ?? paperclipUrl(),
+      updatedAt: raw.updatedAt ?? new Date(0).toISOString(),
+      records: Array.isArray(raw.records) ? raw.records as PaperclipAgentSyncRecord[] : []
+    };
+  } catch {
+    return {
+      paperclipUrl: paperclipUrl(),
+      updatedAt: new Date(0).toISOString(),
+      records: []
+    };
+  }
+}
+
+function savePaperclipSyncState(state: PaperclipSyncState): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(paperclipSyncPath, JSON.stringify(state, null, 2));
+}
+
+function desiredSkillsForAgentProfile(agent: Agent): string[] {
+  const registrySkills = Object.entries(activeSkillRegistry())
+    .filter(([, definition]) => definition.roles.includes(agent.role))
+    .map(([skill]) => skill);
+  return Array.from(new Set([
+    ...roleSkillCatalog[agent.role],
+    ...agent.skills,
+    ...registrySkills
+  ])).sort();
+}
+
+function enabledMcpForAgent(agent: Agent): PaperclipAgentSyncRecord["desiredMcpServers"] {
+  return publicMcpServers()
+    .filter((server) => server.status === "enabled" && server.roles.includes(agent.role))
+    .map((server) => ({
+      id: server.id,
+      name: server.name,
+      transport: server.transport,
+      permissionMode: server.permissions.mode
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function stableHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
+
+function paperclipRunbook(agent: Agent, skills: string[], tools: PaperclipAgentSyncRecord["desiredMcpServers"]): string {
+  return [
+    `Create or update Paperclip agent '${agent.id}' for role '${agent.role}'.`,
+    `Adapter: ${agent.executor}. Model combo: ${agent.modelCombo}.`,
+    `Hermes supplies memory, skill selection, and MCP guidance before Codex execution.`,
+    `Required skill set: ${skills.slice(0, 18).join(", ") || "none"}.`,
+    `Assigned MCP: ${tools.map((tool) => tool.name).join(", ") || "none"}.`,
+    "If Paperclip does not have this agent yet, create it first, then mark this Zero-Human sync record as applied."
+  ].join("\n");
+}
+
+function buildPaperclipSyncRecord(agent: Agent, previous?: PaperclipAgentSyncRecord): PaperclipAgentSyncRecord {
+  const desiredSkills = desiredSkillsForAgentProfile(agent);
+  const desiredMcpServers = enabledMcpForAgent(agent);
+  const desired = {
+    agentId: agent.id,
+    role: agent.role,
+    desiredSkills,
+    desiredMcpServers,
+    executor: agent.executor,
+    modelCombo: agent.modelCombo
+  };
+  const desiredHash = stableHash(desired);
+  const status: PaperclipSyncStatus = !previous
+    ? "missing"
+    : previous.desiredHash === desiredHash
+      ? previous.status
+      : "drifted";
+  return {
+    agentId: agent.id,
+    role: agent.role,
+    desiredName: agent.id.replaceAll("_", " "),
+    desiredHash,
+    desiredSkills,
+    desiredMcpServers,
+    executor: agent.executor,
+    modelCombo: agent.modelCombo,
+    status,
+    paperclipAgentId: previous?.paperclipAgentId,
+    lastSyncedAt: status === "synced" ? previous?.lastSyncedAt : undefined,
+    updatedAt: new Date().toISOString(),
+    runbook: paperclipRunbook(agent, desiredSkills, desiredMcpServers)
+  };
+}
+
+function refreshPaperclipSyncState(): PaperclipSyncState {
+  const previous = new Map(loadPaperclipSyncState().records.map((record) => [record.agentId, record]));
+  const state: PaperclipSyncState = {
+    paperclipUrl: paperclipUrl(),
+    updatedAt: new Date().toISOString(),
+    records: Array.from(agents.values())
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((agent) => buildPaperclipSyncRecord(agent, previous.get(agent.id)))
+  };
+  savePaperclipSyncState(state);
+  return state;
+}
+
+function markPaperclipAgentSynced(agentId: string, paperclipAgentId?: string): PaperclipSyncState {
+  const state = refreshPaperclipSyncState();
+  const record = state.records.find((item) => item.agentId === agentId);
+  if (!record) throw new Error(`Unknown agent ${agentId}`);
+  record.status = "synced";
+  record.paperclipAgentId = paperclipAgentId?.trim() || record.paperclipAgentId || agentId;
+  record.lastSyncedAt = new Date().toISOString();
+  record.updatedAt = record.lastSyncedAt;
+  state.updatedAt = record.updatedAt;
+  savePaperclipSyncState(state);
+  return state;
+}
+
+function paperclipManifestForAgent(agent: Agent): string {
+  const record = loadPaperclipSyncState().records.find((item) => item.agentId === agent.id);
+  if (!record) return "Paperclip sync: no owner manifest yet; run Paperclip sync in Zero-Human Studio.";
+  return [
+    `Paperclip sync: ${record.status}`,
+    `Paperclip agent: ${record.paperclipAgentId ?? record.desiredName}`,
+    `Owner manifest hash: ${record.desiredHash}`
+  ].join("\n");
+}
+
 function inferSkillCategory(text: string, fallbackPath: string, explicit?: string): string {
   if (explicit) return slug(explicit).replaceAll("_", "-");
   for (const [pattern, category] of skillCategoryRules) {
@@ -765,6 +2361,7 @@ function skillsForRole(role: AgentRole, description: string): string[] {
 function mapHireRequest(input: { title: string; department?: string; description?: string; requestedRole?: string }): Omit<HiringRequest, "id" | "source" | "status" | "createdAt" | "updatedAt"> {
   const text = [input.title, input.department, input.description, input.requestedRole].filter(Boolean).join(" ").toLowerCase();
   const roles = Object.keys(roleSkillCatalog) as AgentRole[];
+  const forcedRole = roles.find((role) => role === input.requestedRole?.toLowerCase());
   const scored = roles.map((role) => {
     const direct = text.includes(role) ? 4 : 0;
     const configuredSkillHits = roleSkillCatalog[role].filter((skill) => text.includes(skill.replaceAll("_", " "))).length;
@@ -778,7 +2375,7 @@ function mapHireRequest(input: { title: string; department?: string; description
     return { role, score: direct + configuredSkillHits * 2 + registryHits };
   }).sort((a, b) => b.score - a.score);
   const best = scored[0] ?? { role: "operations" as AgentRole, score: 0 };
-  const suggestedRole = best.score > 0 ? best.role : "operations";
+  const suggestedRole = forcedRole ?? (best.score > 0 ? best.role : "operations");
   const suggestedSkills = skillsForRole(suggestedRole, text);
   const titleId = sanitizeAgentId(input.title);
   let suggestedAgentId = titleId;
@@ -849,11 +2446,15 @@ function inferRequiredSkills(agent: Agent, type: TaskType, description: string):
 
 function roleGuidance(agent: Agent, requiredSkills: string[]): string {
   return [
+    "Zero-Human Owner policy: this manifest is the source of truth for Paperclip, Hermes, and Codex execution.",
     `Role: ${agent.role}`,
     `Executor: ${agent.executor}`,
     `Required skills: ${requiredSkills.join(", ")}`,
+    paperclipManifestForAgent(agent),
     mcpManifestForAgent(agent),
-    "Stay inside this role and use the relevant skills before editing or validating."
+    "Hermes must select relevant memory, skills, and MCP context before the executor edits or validates.",
+    "Stay inside this role and use the relevant skills before editing or validating.",
+    "If work becomes blocked, diagnose the blocker and either fix it, delegate to the correct role, request/hire the missing agent, or ask for one explicit owner decision. Do not leave a blocked issue without a concrete unblocker."
   ].join("\n");
 }
 
@@ -1381,10 +2982,138 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "@zh/hr", redis: bus.connected });
 });
 
+app.get("/api/paperclip/sync", (_req, res) => {
+  res.json(refreshPaperclipSyncState());
+});
+
+app.post("/api/paperclip/sync", (_req, res) => {
+  const state = refreshPaperclipSyncState();
+  addEvent("paperclip_sync_manifest", `Prepared Paperclip owner manifest for ${state.records.length} agents.`);
+  res.json(state);
+});
+
+app.post("/api/paperclip/sync/:agentId/applied", (req, res) => {
+  try {
+    const state = markPaperclipAgentSynced(req.params.agentId, typeof req.body?.paperclipAgentId === "string" ? req.body.paperclipAgentId : undefined);
+    addEvent("paperclip_agent_synced", `Marked ${req.params.agentId} as applied in Paperclip.`);
+    res.json(state);
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+app.get("/api/paperclip/skills/sync", (_req, res) => {
+  res.json(publicPaperclipSkillSyncReport());
+});
+
+app.post("/api/paperclip/skills/sync", async (_req, res) => {
+  const report = await syncSkillsToPaperclip();
+  addEvent(
+    "paperclip_skill_sync",
+    report.unavailable
+      ? `Paperclip skill sync unavailable: ${report.error}`
+      : `Synced ${report.imported} new and ${report.updated} updated Zero-Human skills to Paperclip.`
+  );
+  res.status(report.unavailable ? 503 : 200).json(report);
+});
+
+app.get("/api/paperclip/repositories/sync", (_req, res) => {
+  res.json(publicPaperclipRepositorySyncReport());
+});
+
+app.post("/api/paperclip/repositories/sync", async (_req, res) => {
+  const report = await syncRepositoriesToPaperclip();
+  addEvent(
+    "paperclip_repository_sync",
+    report.unavailable
+      ? `Paperclip repository sync unavailable: ${report.error}`
+      : `Synced ${report.workspacesSynced} Paperclip workspaces and linked ${report.issuesLinked} issues`
+  );
+  res.status(report.unavailable ? 503 : 200).json(report);
+});
+
+app.get("/api/paperclip/chat/signals", (_req, res) => {
+  res.json(publicPaperclipChatSignalReport());
+});
+
+app.post("/api/paperclip/chat/signals/scan", async (_req, res) => {
+  const report = await scanPaperclipChatSignals();
+  addEvent(
+    "paperclip_chat_signal_scan",
+    report.unavailable
+      ? `Paperclip chat scan unavailable: ${report.error}`
+      : `Scanned ${report.scanned} Paperclip comments and created ${report.createdRequests} hiring requests.`
+  );
+  res.status(report.unavailable ? 503 : 200).json(report);
+});
+
+app.get("/api/paperclip/hermes/sync", (_req, res) => {
+  res.json(publicPaperclipHermesBridgeReport());
+});
+
+app.post("/api/paperclip/hermes/sync", async (_req, res) => {
+  const report = await syncHermesBridgeToPaperclip();
+  addEvent(
+    "paperclip_hermes_bridge",
+    report.unavailable
+      ? `Paperclip Hermes bridge unavailable: ${report.error}`
+      : `Hermes bridge synced to ${report.agentsPatched}/${report.agentsScanned} Paperclip agents.`
+  );
+  res.status(report.unavailable ? 503 : 200).json(report);
+});
+
+app.get("/api/issue-policies", (_req, res) => {
+  res.json(publicIssuePolicies());
+});
+
+app.put("/api/issue-policies/:role", (req, res) => {
+  const role = req.params.role as AgentRole;
+  if (!(role in roleSkillCatalog)) return res.status(404).json({ error: "Unknown role" });
+  const current = issuePolicies.get(role) ?? defaultIssuePolicies[role];
+  const input = req.body as Partial<AgentIssuePolicy>;
+  const next: AgentIssuePolicy = {
+    ...current,
+    ...input,
+    role,
+    allowedTaskTypes: Array.isArray(input.allowedTaskTypes)
+      ? input.allowedTaskTypes.filter((type): type is TaskType => Object.keys(taskSkillCatalog).includes(type as string))
+      : current.allowedTaskTypes,
+    approvalKeywords: Array.isArray(input.approvalKeywords) ? input.approvalKeywords.map(String).filter(Boolean) : current.approvalKeywords,
+    triageKeywords: Array.isArray(input.triageKeywords) ? input.triageKeywords.map(String).filter(Boolean) : current.triageKeywords,
+    maxPriorityWithoutApproval: input.maxPriorityWithoutApproval === 1 || input.maxPriorityWithoutApproval === 2 || input.maxPriorityWithoutApproval === 3
+      ? input.maxPriorityWithoutApproval
+      : current.maxPriorityWithoutApproval,
+    defaultDecision: ["auto_assign", "triage", "approval_required", "blocked"].includes(input.defaultDecision ?? "")
+      ? input.defaultDecision as AgentIssueDecision
+      : current.defaultDecision
+  };
+  issuePolicies.set(role, next);
+  saveIssuePolicies();
+  addEvent("zh:issue-policy:updated", `Updated issue policy for ${role}`);
+  res.json(next);
+});
+
+app.post("/api/agent-issues/evaluate", (req, res) => {
+  try {
+    const { agentId, title, description, type, priority } = req.body as {
+      agentId?: string;
+      title?: string;
+      description?: string;
+      type?: TaskType;
+      priority?: 1 | 2 | 3;
+    };
+    if (!agentId || !title?.trim()) return res.status(400).json({ error: "agentId and title are required" });
+    res.json(evaluateAgentIssuePolicy({ agentId, title, description, type, priority }));
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+  }
+});
+
 app.get("/api/state", async (_req, res) => {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
   const spent = currentSpend();
   const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
+  const paperclipSync = refreshPaperclipSyncState();
   const memorySkills = memory.skills.map((skill) => ({
     agentId: skill.agentId,
     skill: skill.skill,
@@ -1416,6 +3145,12 @@ app.get("/api/state", async (_req, res) => {
     alerts,
     upstreams: upstreamStatus(),
     repositories: listRepositories(),
+    paperclipSync,
+    paperclipSkillSync: publicPaperclipSkillSyncReport(),
+    paperclipRepositorySync: publicPaperclipRepositorySyncReport(),
+    paperclipChatSignals: publicPaperclipChatSignalReport(),
+    paperclipHermesBridge: publicPaperclipHermesBridgeReport(),
+    issuePolicies: publicIssuePolicies(),
     mcpMarketplace: listMcpMarketplace(),
     mcpServers: publicMcpServers(),
     skillRegistry: activeSkillRegistry(),
@@ -1484,6 +3219,7 @@ app.post("/api/repositories", async (req, res) => {
   saveRepositories();
   const synced = await syncRegisteredRepository(repository);
   if (synced.status === "error") return res.status(502).json(publicRepository(synced));
+  if ((synced.sourceKind ?? "work") === "work") await syncRepositoriesToPaperclip();
   addEvent(repoSourceKind === "skill_source" ? "zh:skill-source:registered" : "zh:repository:registered", `Registered ${synced.name}`);
   res.status(201).json(publicRepository(synced));
 });
@@ -1497,6 +3233,7 @@ app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
     }
     const synced = await syncRegisteredRepository(repository);
     if (synced.status === "error") return res.status(502).json(publicRepository(synced));
+    if ((synced.sourceKind ?? "work") === "work") await syncRepositoriesToPaperclip();
     addEvent("zh:repository:synced", `Synced ${synced.name}`);
     res.json(publicRepository(synced));
   } catch (error) {

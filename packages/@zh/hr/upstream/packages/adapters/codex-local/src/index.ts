@@ -51,10 +51,10 @@ export const models = [
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
-    label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    label: "9Router cheap",
+    description: "Route lightweight Paperclip orchestration through the Zero-Human 9Router cheap/free combo.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
+      model: "combotest",
       modelReasoningEffort: "low",
     },
     source: "adapter_default",
@@ -89,6 +89,7 @@ Notes:
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. In managed-home mode (the default) this is ~/.paperclip/instances/<id>/companies/<companyId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
+- When adapter config contains zeroHumanMcpSync.servers, Paperclip writes those Zero-Human MCP assignments into the effective CODEX_HOME/config.toml immediately before Codex starts, so each run receives the MCP tools mapped to that agent role.
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
