@@ -268,7 +268,7 @@ type PaperclipHermesBridgeReport = {
     agentId?: string;
     agentName?: string;
     role?: string;
-    action: "protocol_synced" | "agent_created" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
+    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
     reason: string;
   }>;
   error?: string;
@@ -768,11 +768,39 @@ function paperclipAdapterConfig(value: unknown): Record<string, unknown> {
 function findZeroHumanAgentForPaperclipAgent(row: { name: string; role: string }): Agent | undefined {
   const normalizedName = slug(row.name);
   const normalizedRole = slug(row.role);
-  return Array.from(agents.values()).find((agent) =>
+  const exact = Array.from(agents.values()).find((agent) =>
     slug(agent.id) === normalizedName ||
     slug(agent.role) === normalizedRole ||
     slug(agent.id) === normalizedRole
   );
+  if (exact) return exact;
+
+  const aliases: Record<string, AgentRole> = {
+    chief_technology_officer: "cto",
+    technical_lead: "cto",
+    engineer: "backend",
+    backend_engineer: "backend",
+    frontend_engineer: "frontend",
+    quality_engineer: "qa",
+    qa_engineer: "qa",
+    devops_engineer: "devops",
+    designer: "design",
+    ux_designer: "design",
+    uxdesigner: "design",
+    product_designer: "design",
+    brand_designer: "design",
+    chief_marketing_officer: "marketing",
+    cmo: "marketing",
+    marketer: "marketing",
+    growth_marketer: "marketing",
+    customer_success: "support",
+    support: "support",
+    finance_ops: "finance",
+    finance_operations: "finance",
+    operations: "operations"
+  };
+  const aliasedRole = aliases[normalizedRole] ?? aliases[normalizedName];
+  return aliasedRole ? Array.from(agents.values()).find((agent) => agent.role === aliasedRole) : undefined;
 }
 
 function paperclipNativeDesiredSkillsForRole(row: { name: string; role: string }): string[] {
@@ -804,22 +832,27 @@ function codexMcpServerPayload(server: McpServerConfig): PaperclipCodexMcpServer
   };
 }
 
+function mergeMcpServers(...groups: PaperclipCodexMcpServer[][]): PaperclipCodexMcpServer[] {
+  const byId = new Map<string, PaperclipCodexMcpServer>();
+  for (const server of groups.flat()) byId.set(server.id, server);
+  return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function mandatoryMcpServers(): PaperclipCodexMcpServer[] {
+  const sequentialThinking = publicMcpServers().find((server) => server.id === "sequential-thinking");
+  return sequentialThinking ? [codexMcpServerPayload(sequentialThinking)] : [];
+}
+
 function enabledMcpServersForAgent(agent: Agent): PaperclipCodexMcpServer[] {
-  return publicMcpServers()
+  const roleServers = publicMcpServers()
     .filter((server) => server.status === "enabled" && server.roles.includes(agent.role))
-    .map(codexMcpServerPayload)
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .map(codexMcpServerPayload);
+  return mergeMcpServers(mandatoryMcpServers(), roleServers);
 }
 
 function paperclipNativeMcpServersForRole(row: { name: string; role: string }): PaperclipCodexMcpServer[] {
-  const normalizedName = slug(row.name);
-  const normalizedRole = slug(row.role);
-  if (normalizedName !== "ceo" && normalizedRole !== "ceo") return [];
-
-  const sequentialThinking = publicMcpServers().find(
-    (server) => server.id === "sequential-thinking" && server.status === "enabled",
-  );
-  return sequentialThinking ? [codexMcpServerPayload(sequentialThinking)] : [];
+  const zeroHumanAgent = findZeroHumanAgentForPaperclipAgent(row);
+  return zeroHumanAgent ? enabledMcpServersForAgent(zeroHumanAgent) : mandatoryMcpServers();
 }
 
 type PaperclipAgentRow = {
@@ -885,6 +918,35 @@ function paperclipAgentCapabilities(agent: Agent): string {
   ].join(" ");
 }
 
+function paperclipManagerRoleForAgent(agent: Agent): AgentRole | "ceo" | undefined {
+  if (["frontend", "backend", "qa", "devops"].includes(agent.role)) return "cto";
+  if (agent.role === "design") return "product";
+  if (agent.role === "sales") return "marketing";
+  if (agent.role === "support") return "operations";
+  return "ceo";
+}
+
+async function resolvePaperclipReportsTo(
+  client: PoolClient,
+  companyId: string,
+  agent: Agent,
+  ceoId?: string
+): Promise<string | null> {
+  const managerRole = paperclipManagerRoleForAgent(agent);
+  if (!managerRole) return null;
+  if (managerRole === "ceo") return ceoId ?? null;
+  const manager = await client.query<{ id: string }>(
+    `select id::text
+       from agents
+      where company_id = $1
+        and (lower(role) = lower($2) or lower(name) = lower($2))
+      order by created_at asc
+      limit 1`,
+    [companyId, managerRole]
+  );
+  return manager.rows[0]?.id ?? ceoId ?? null;
+}
+
 async function desiredPaperclipSkillKeysForAgent(client: PoolClient, companyId: string, agent: Agent, syncedAt: string): Promise<string[]> {
   const zeroHumanSkillKeys: string[] = [];
   for (const skillId of desiredSkillsForAgentProfile(agent)) {
@@ -904,6 +966,16 @@ async function ensurePaperclipAgentForZeroHumanAgent(
   syncedAt: string,
   reason = "Zero-Human role exists but Paperclip agent is missing."
 ): Promise<{ id: string; created: boolean; name: string; role: string }> {
+  const ceoResult = await client.query<PaperclipAgentRow>(
+    `select id::text, name, role, title, adapter_type, adapter_config, runtime_config, permissions
+       from agents
+      where company_id = $1 and lower(role) = 'ceo'
+      order by created_at asc
+      limit 1`,
+    [companyId]
+  );
+  const ceo = ceoResult.rows[0];
+  const reportsTo = await resolvePaperclipReportsTo(client, companyId, agent, ceo?.id);
   const existing = await client.query<{ id: string; name: string; role: string }>(
     `select id::text, name, role
        from agents
@@ -914,19 +986,22 @@ async function ensurePaperclipAgentForZeroHumanAgent(
     [companyId, agent.role, agent.id, agent.id.replaceAll("_", " ")]
   );
   if (existing.rows[0]) {
+    await client.query(
+      `update agents
+          set reports_to = $3::uuid,
+              title = coalesce(nullif(title, ''), $4),
+              capabilities = case
+                when capabilities is null or capabilities = '' then $5
+                else capabilities
+              end,
+              updated_at = now()
+        where company_id = $1 and id = $2::uuid`,
+      [companyId, existing.rows[0].id, reportsTo, paperclipAgentTitle(agent), paperclipAgentCapabilities(agent)]
+    );
     markPaperclipAgentSynced(agent.id, existing.rows[0].id);
     return { ...existing.rows[0], created: false };
   }
 
-  const ceoResult = await client.query<PaperclipAgentRow>(
-    `select id::text, name, role, title, adapter_type, adapter_config, runtime_config, permissions
-       from agents
-      where company_id = $1 and lower(role) = 'ceo'
-      order by created_at asc
-      limit 1`,
-    [companyId]
-  );
-  const ceo = ceoResult.rows[0];
   const baseConfig = paperclipAdapterConfig(ceo?.adapter_config);
   const desiredSkills = await desiredPaperclipSkillKeysForAgent(client, companyId, agent, syncedAt);
   const desiredMcpServers = enabledMcpServersForAgent(agent);
@@ -970,7 +1045,7 @@ async function ensurePaperclipAgentForZeroHumanAgent(
       agent.role,
       paperclipAgentTitle(agent),
       paperclipAgentIcon(agent),
-      ceo?.id ?? null,
+      reportsTo,
       paperclipAgentCapabilities(agent),
       ceo?.adapter_type ?? "codex_local",
       JSON.stringify(adapterConfig),
@@ -1052,25 +1127,10 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
     report.protocolSkillSynced = true;
     report.details.push({ action: "protocol_synced", reason: "Hermes protocol skill upserted in Paperclip." });
 
-    for (const agent of Array.from(agents.values()).sort((a, b) => a.id.localeCompare(b.id))) {
-      if (agent.status === "paused") continue;
-      const ensured = await ensurePaperclipAgentForZeroHumanAgent(
-        client,
-        companyId,
-        agent,
-        report.createdAt,
-        "Hermes bridge sync ensures Paperclip has a real worker for every active Zero-Human role."
-      );
-      if (ensured.created) {
-        report.details.push({
-          agentId: ensured.id,
-          agentName: ensured.name,
-          role: ensured.role,
-          action: "agent_created",
-          reason: `Created Paperclip agent for Zero-Human role ${agent.role}.`
-        });
-      }
-    }
+    report.details.push({
+      action: "paperclip_hiring_authority",
+      reason: "Zero-Human did not create missing agents during bridge sync; Paperclip remains the hiring and execution authority."
+    });
 
     const agentResult = await client.query<{ id: string; name: string; role: string; adapter_config: unknown }>(
       "select id::text, name, role, adapter_config from agents where company_id = $1 order by created_at asc",
@@ -2126,7 +2186,7 @@ const baseMcpMarketplace: McpMarketplaceItem[] = [
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-sequential-thinking"],
     env: {},
-    roles: ["cto", "backend", "product", "research", "operations"],
+    roles: Object.keys(roleSkillCatalog) as AgentRole[],
     permissions: { mode: "read-only", requiresApproval: [] },
     tags: ["thinking", "planning", "reasoning", "research"]
   },
@@ -2180,10 +2240,25 @@ function loadMcpServers(): Map<string, McpServerConfig> {
 
 const mcpServers = loadMcpServers();
 
+function ensureMandatoryMcpRegistry(): void {
+  const item = baseMcpMarketplace.find((entry) => entry.id === "sequential-thinking");
+  if (!item || mcpServers.has(item.id)) return;
+  const now = new Date().toISOString();
+  mcpServers.set(item.id, {
+    ...item,
+    status: "enabled",
+    installedAt: now,
+    updatedAt: now
+  });
+  saveMcpServers();
+}
+
 function saveMcpServers(): void {
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(mcpRegistryPath, JSON.stringify(Array.from(mcpServers.values()), null, 2));
 }
+
+ensureMandatoryMcpRegistry();
 
 function publicMcpServers(): McpServerConfig[] {
   return Array.from(mcpServers.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -2249,13 +2324,13 @@ function extractMcpRegistryItems(body: unknown): unknown[] {
 }
 
 function mcpManifestForAgent(agent: Agent): string {
-  const enabled = publicMcpServers().filter((server) => server.status === "enabled" && server.roles.includes(agent.role));
+  const enabled = enabledMcpServersForAgent(agent);
   if (enabled.length === 0) return "MCP tools: none assigned.";
   const rows = enabled.map((server) => {
     const toolRef = server.transport === "stdio"
       ? `${server.command} ${(server.args ?? []).join(" ")}`.trim()
       : server.url ?? "";
-    return `- ${server.name} (${server.category}, ${server.permissions.mode}): ${toolRef}`;
+    return `- ${server.name} (${server.category}, ${server.permissionMode}): ${toolRef}`;
   });
   return ["MCP tools assigned to this role:", ...rows].join("\n");
 }
@@ -2281,9 +2356,23 @@ function loadPaperclipSyncState(): PaperclipSyncState {
   }
 }
 
+function emptyPaperclipSyncState(): PaperclipSyncState {
+  return {
+    paperclipUrl: paperclipUrl(),
+    updatedAt: new Date().toISOString(),
+    records: []
+  };
+}
+
 function savePaperclipSyncState(state: PaperclipSyncState): void {
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(paperclipSyncPath, JSON.stringify(state, null, 2));
+}
+
+function resetPaperclipSyncState(): PaperclipSyncState {
+  const state = emptyPaperclipSyncState();
+  savePaperclipSyncState(state);
+  return state;
 }
 
 function desiredSkillsForAgentProfile(agent: Agent): string[] {
@@ -2298,13 +2387,12 @@ function desiredSkillsForAgentProfile(agent: Agent): string[] {
 }
 
 function enabledMcpForAgent(agent: Agent): PaperclipAgentSyncRecord["desiredMcpServers"] {
-  return publicMcpServers()
-    .filter((server) => server.status === "enabled" && server.roles.includes(agent.role))
+  return enabledMcpServersForAgent(agent)
     .map((server) => ({
       id: server.id,
       name: server.name,
       transport: server.transport,
-      permissionMode: server.permissions.mode
+      permissionMode: server.permissionMode
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -2319,7 +2407,7 @@ function paperclipRunbook(agent: Agent, skills: string[], tools: PaperclipAgentS
     `Adapter: ${agent.executor}. Model combo: ${agent.modelCombo}.`,
     `Hermes supplies memory, skill selection, and MCP guidance before Codex execution.`,
     `Required skill set: ${skills.slice(0, 18).join(", ") || "none"}.`,
-    `Assigned MCP: ${tools.map((tool) => tool.name).join(", ") || "none"}.`,
+    `Assigned MCP: ${tools.map((tool) => tool.name).join(", ") || "none"}. Sequential Thinking MCP is mandatory for every agent as the baseline thinking pattern.`,
     "If Paperclip does not have this agent yet, create it first, then mark this Zero-Human sync record as applied."
   ].join("\n");
 }
@@ -2386,7 +2474,7 @@ function markPaperclipAgentSynced(agentId: string, paperclipAgentId?: string): P
 
 function paperclipManifestForAgent(agent: Agent): string {
   const record = loadPaperclipSyncState().records.find((item) => item.agentId === agent.id);
-  if (!record) return "Paperclip sync: no owner manifest yet; run Paperclip sync in Zero-Human Studio.";
+  if (!record) return "Paperclip sync: reset. Generate a new owner manifest from Zero-Human Studio only when you are ready to align Paperclip agents.";
   return [
     `Paperclip sync: ${record.status}`,
     `Paperclip agent: ${record.paperclipAgentId ?? record.desiredName}`,
@@ -3189,12 +3277,18 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.get("/api/paperclip/sync", (_req, res) => {
-  res.json(refreshPaperclipSyncState());
+  res.json(loadPaperclipSyncState());
 });
 
 app.post("/api/paperclip/sync", (_req, res) => {
   const state = refreshPaperclipSyncState();
   addEvent("paperclip_sync_manifest", `Prepared Paperclip owner manifest for ${state.records.length} agents.`);
+  res.json(state);
+});
+
+app.delete("/api/paperclip/sync", (_req, res) => {
+  const state = resetPaperclipSyncState();
+  addEvent("paperclip_sync_reset", "Cleared the Zero-Human Paperclip owner manifest.");
   res.json(state);
 });
 
@@ -3319,7 +3413,7 @@ app.get("/api/state", async (_req, res) => {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
   const spent = currentSpend();
   const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
-  const paperclipSync = refreshPaperclipSyncState();
+  const paperclipSync = loadPaperclipSyncState();
   const memorySkills = memory.skills.map((skill) => ({
     agentId: skill.agentId,
     skill: skill.skill,

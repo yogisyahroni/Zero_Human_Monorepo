@@ -239,6 +239,13 @@ h2 {
   gap: 14px;
   margin-bottom: 14px;
 }
+.buttonGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .agentList, .taskList {
   display: grid;
   gap: 10px;

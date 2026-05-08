@@ -921,6 +921,13 @@ function App() {
     setBusy(false);
   }
 
+  async function resetPaperclipManifest() {
+    setBusy(true);
+    await fetch("/api/paperclip/sync", { method: "DELETE" });
+    await refresh();
+    setBusy(false);
+  }
+
   async function markPaperclipApplied(agentId: string) {
     setBusy(true);
     await fetch(`/api/paperclip/sync/${agentId}/applied`, {
@@ -1296,9 +1303,14 @@ function App() {
                 <h2>Paperclip sync</h2>
                 <p>Owner manifest that aligns Paperclip agents with Zero-Human roles, skills, and MCP tools.</p>
               </div>
-              <button onClick={syncPaperclipManifest} disabled={busy}>
-                <RefreshCw size={15} /> Sync manifest
-              </button>
+              <div className="buttonGroup">
+                <button onClick={resetPaperclipManifest} disabled={busy || state.paperclipSync.records.length === 0}>
+                  Reset
+                </button>
+                <button onClick={syncPaperclipManifest} disabled={busy}>
+                  <RefreshCw size={15} /> Sync manifest
+                </button>
+              </div>
             </div>
             <div className="syncSummary">
               <span>{state.paperclipSync.records.filter((record) => record.status === "synced").length} synced</span>
@@ -1307,6 +1319,9 @@ function App() {
               <span>{state.paperclipSync.paperclipUrl}</span>
             </div>
             <div className="paperclipSyncGrid">
+              {state.paperclipSync.records.length === 0 && (
+                <div className="empty">Paperclip manifest is empty. Generate it only after the org structure is ready.</div>
+              )}
               {state.paperclipSync.records.map((record) => (
                 <article className="syncCard" key={record.agentId}>
                   <div className="agentTop">
