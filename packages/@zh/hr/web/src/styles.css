@@ -663,6 +663,34 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
 }
+.mcpImportGrid {
+  display: grid;
+  grid-template-columns: minmax(260px, .8fr) minmax(320px, 1.2fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.mcpImportBox {
+  border: 1px solid var(--line);
+  background: #111514;
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 9px;
+}
+.mcpImportBox strong,
+.mcpImportBox span {
+  display: block;
+}
+.mcpImportBox span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.customMcpEditor {
+  min-height: 196px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
 .mcpCard,
 .mcpSummary,
 .roleToolCard {
@@ -867,5 +895,6 @@ textarea {
   .taskRow, .repoRow, .comboRow, .hireCard { grid-template-columns: 1fr; }
   .taskActions, .repoActions, .hireActions { justify-content: flex-start; }
   .mcpMarketplace, .mcpRoleMap { grid-column: auto; }
+  .mcpImportGrid { grid-template-columns: 1fr; }
   .mcpSummary, .mcpCardFooter, .mcpActions { align-items: flex-start; justify-content: flex-start; flex-direction: column; }
 }

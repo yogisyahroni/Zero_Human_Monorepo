@@ -326,6 +326,20 @@ function App() {
   const [mcpQuery, setMcpQuery] = useState("");
   const [selectedMcpId, setSelectedMcpId] = useState("");
   const [mcpJsonDraft, setMcpJsonDraft] = useState("");
+  const [mcpRegistryUrl, setMcpRegistryUrl] = useState("");
+  const [customMcpDraft, setCustomMcpDraft] = useState(JSON.stringify({
+    id: "custom-mcp",
+    name: "Custom MCP",
+    description: "Paste an MCP JSON config here.",
+    category: "custom",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "package-name"],
+    env: {},
+    roles: ["operations"],
+    permissions: { mode: "approval-required", requiresApproval: [] },
+    tags: ["custom"]
+  }, null, 2));
   const [mcpError, setMcpError] = useState("");
   const [mcpMessage, setMcpMessage] = useState("");
   const [hireDraft, setHireDraft] = useState({
@@ -548,6 +562,53 @@ function App() {
     } else {
       setSelectedMcpId(body.id);
       setMcpMessage(`${body.name} installed. Fill secrets, enable it, then test.`);
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function importMcpRegistry(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMcpError("");
+    setMcpMessage("");
+    const response = await fetch("/api/mcp/marketplace/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: mcpRegistryUrl })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setMcpError(body.error ?? "Failed to import MCP registry");
+    } else {
+      setMcpMessage(`Imported ${body.imported} MCP entries${body.skipped?.length ? `, skipped ${body.skipped.length}` : ""}.`);
+      setMcpRegistryUrl("");
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function installCustomMcp(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMcpError("");
+    setMcpMessage("");
+    try {
+      const parsed = JSON.parse(customMcpDraft);
+      const response = await fetch("/api/mcp/custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsed)
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setMcpError(body.error ?? "Failed to install custom MCP");
+      } else {
+        setSelectedMcpId(body.id);
+        setMcpMessage(`${body.name} installed from custom JSON.`);
+      }
+    } catch (error) {
+      setMcpError(`Invalid JSON: ${(error as Error).message}`);
     }
     await refresh();
     setBusy(false);
@@ -1329,10 +1390,39 @@ function App() {
               Search marketplace
               <input
                 value={mcpQuery}
-                placeholder="github, figma, database, browser"
+                placeholder="github, figma, database, browser, sequential"
                 onChange={(event) => setMcpQuery(event.target.value)}
               />
             </label>
+            <div className="mcpImportGrid">
+              <form className="mcpImportBox" onSubmit={importMcpRegistry}>
+                <strong>Import registry URL</strong>
+                <span>Load a JSON feed with `items`, `servers`, or an array of MCP configs.</span>
+                <input
+                  value={mcpRegistryUrl}
+                  placeholder="https://example.com/mcp-registry.json"
+                  onChange={(event) => setMcpRegistryUrl(event.target.value)}
+                />
+                <button disabled={busy || !mcpRegistryUrl.trim()}>
+                  <Download size={15} /> Import registry
+                </button>
+              </form>
+              <form className="mcpImportBox customMcpBox" onSubmit={installCustomMcp}>
+                <strong>Add custom MCP JSON</strong>
+                <span>Paste a single MCP config. Zero-Human will validate, install, and add it to the local marketplace.</span>
+                <textarea
+                  className="customMcpEditor"
+                  value={customMcpDraft}
+                  spellCheck={false}
+                  onChange={(event) => setCustomMcpDraft(event.target.value)}
+                />
+                <button disabled={busy || !customMcpDraft.trim()}>
+                  <Plus size={15} /> Install custom MCP
+                </button>
+              </form>
+            </div>
+            {mcpError && <p className="formWarning">{mcpError}</p>}
+            {mcpMessage && <p className="formSuccess">{mcpMessage}</p>}
             <div className="mcpCards">
               {filteredMarketplace.map((item) => (
                 <article className="mcpCard" key={item.id}>

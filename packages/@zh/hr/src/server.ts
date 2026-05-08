@@ -51,6 +51,7 @@ const repositoriesPath = path.join(stateDir, "repositories.json");
 const hiringRequestsPath = path.join(stateDir, "hiring-requests.json");
 const customSkillsPath = path.join(stateDir, "custom-skills.json");
 const mcpRegistryPath = path.join(stateDir, "mcp-servers.json");
+const mcpMarketplacePath = path.join(stateDir, "mcp-marketplace.json");
 type ServiceHealth = {
   name: string;
   url: string;
@@ -374,7 +375,7 @@ const skillRoleRules: Array<[RegExp, AgentRole[]]> = [
   [/support|docs|ticket|feedback/, ["support", "operations", "product"]]
 ];
 
-const mcpMarketplace: McpMarketplaceItem[] = [
+const baseMcpMarketplace: McpMarketplaceItem[] = [
   {
     id: "github",
     name: "GitHub MCP",
@@ -447,6 +448,21 @@ const mcpMarketplace: McpMarketplaceItem[] = [
     tags: ["browser", "qa", "research"]
   },
   {
+    id: "sequential-thinking",
+    name: "Sequential Thinking MCP",
+    description: "Structured step-by-step reasoning tools for planning, decomposition, and difficult problem solving.",
+    category: "reasoning",
+    packageName: "@modelcontextprotocol/server-sequential-thinking",
+    homepage: "https://github.com/modelcontextprotocol/servers",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+    env: {},
+    roles: ["cto", "backend", "product", "research", "operations"],
+    permissions: { mode: "read-only", requiresApproval: [] },
+    tags: ["thinking", "planning", "reasoning", "research"]
+  },
+  {
     id: "slack",
     name: "Slack MCP",
     description: "Team communication, channel search, and stakeholder updates for backoffice agents.",
@@ -461,6 +477,29 @@ const mcpMarketplace: McpMarketplaceItem[] = [
     tags: ["chat", "support", "ops"]
   }
 ];
+
+function loadCustomMcpMarketplace(): McpMarketplaceItem[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(mcpMarketplacePath, "utf8")) as McpMarketplaceItem[];
+    return raw.filter((item) => item.id && item.name);
+  } catch {
+    return [];
+  }
+}
+
+const customMcpMarketplace = new Map<string, McpMarketplaceItem>(loadCustomMcpMarketplace().map((item) => [item.id, item]));
+
+function saveCustomMcpMarketplace(): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(mcpMarketplacePath, JSON.stringify(Array.from(customMcpMarketplace.values()), null, 2));
+}
+
+function listMcpMarketplace(): McpMarketplaceItem[] {
+  const entries = new Map<string, McpMarketplaceItem>();
+  for (const item of baseMcpMarketplace) entries.set(item.id, item);
+  for (const item of customMcpMarketplace.values()) entries.set(item.id, item);
+  return Array.from(entries.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
 
 function loadMcpServers(): Map<string, McpServerConfig> {
   try {
@@ -492,6 +531,53 @@ function validateMcpConfig(server: McpServerConfig): void {
   for (const role of server.roles) {
     if (!(role in roleSkillCatalog)) throw new Error(`Unknown role: ${role}`);
   }
+}
+
+function normalizeMcpMarketplaceItem(input: unknown): McpMarketplaceItem {
+  const raw = input as Partial<McpMarketplaceItem> & {
+    server?: Partial<McpMarketplaceItem>;
+    config?: Partial<McpMarketplaceItem>;
+    mcp?: Partial<McpMarketplaceItem>;
+  };
+  const source = { ...raw.server, ...raw.config, ...raw.mcp, ...raw };
+  const id = sanitizeRepositoryId(String(source.id ?? source.name ?? source.packageName ?? `mcp-${nanoid(6)}`));
+  const name = ascii(source.name ?? id.replaceAll("-", " "));
+  const transport = source.transport === "http" || source.transport === "sse" ? source.transport : "stdio";
+  const tags = Array.isArray(source.tags) ? source.tags.map(String).map(slug).filter(Boolean) : [];
+  const roles = Array.isArray(source.roles)
+    ? source.roles.filter((role): role is AgentRole => typeof role === "string" && role in roleSkillCatalog)
+    : [];
+  const item: McpMarketplaceItem = {
+    id,
+    name,
+    description: ascii(source.description ?? `Custom MCP server ${name}.`),
+    category: slug(source.category ?? tags[0] ?? "custom").replaceAll("_", "-"),
+    packageName: source.packageName,
+    homepage: source.homepage,
+    transport,
+    command: transport === "stdio" ? (source.command ?? "npx") : undefined,
+    args: Array.isArray(source.args) ? source.args.map(String) : [],
+    url: transport === "stdio" ? undefined : source.url,
+    env: source.env && typeof source.env === "object" ? Object.fromEntries(Object.entries(source.env).map(([key, value]) => [key, String(value)])) : {},
+    roles: roles.length ? roles : ["operations"],
+    permissions: {
+      mode: source.permissions?.mode ?? "approval-required",
+      requiresApproval: Array.isArray(source.permissions?.requiresApproval) ? source.permissions.requiresApproval.map(String) : []
+    },
+    tags
+  };
+  validateMcpConfig({ ...item, status: "available" });
+  return item;
+}
+
+function extractMcpRegistryItems(body: unknown): unknown[] {
+  if (Array.isArray(body)) return body;
+  const record = body as Record<string, unknown>;
+  for (const key of ["items", "servers", "mcps", "marketplace", "packages"]) {
+    if (Array.isArray(record?.[key])) return record[key] as unknown[];
+  }
+  if (record && typeof record === "object") return [record];
+  return [];
 }
 
 function mcpManifestForAgent(agent: Agent): string {
@@ -1330,7 +1416,7 @@ app.get("/api/state", async (_req, res) => {
     alerts,
     upstreams: upstreamStatus(),
     repositories: listRepositories(),
-    mcpMarketplace,
+    mcpMarketplace: listMcpMarketplace(),
     mcpServers: publicMcpServers(),
     skillRegistry: activeSkillRegistry(),
     skillImports: skillImportReports,
@@ -1433,7 +1519,7 @@ app.post("/api/skills/import-repo", async (req, res) => {
 
 app.post("/api/mcp/install", (req, res) => {
   const { marketplaceId } = (req.body ?? {}) as { marketplaceId?: string };
-  const item = mcpMarketplace.find((entry) => entry.id === marketplaceId);
+  const item = listMcpMarketplace().find((entry) => entry.id === marketplaceId);
   if (!item) return res.status(404).json({ error: "MCP marketplace item not found" });
   const now = new Date().toISOString();
   const existing = mcpServers.get(item.id);
@@ -1458,6 +1544,53 @@ app.post("/api/mcp/install", (req, res) => {
   saveMcpServers();
   addEvent("zh:mcp:installed", `Installed ${server.name}`);
   res.status(201).json(server);
+});
+
+app.post("/api/mcp/custom", (req, res) => {
+  try {
+    const now = new Date().toISOString();
+    const parsed = normalizeMcpMarketplaceItem(req.body);
+    const server: McpServerConfig = {
+      ...parsed,
+      status: "installed",
+      installedAt: now,
+      updatedAt: now
+    };
+    validateMcpConfig(server);
+    mcpServers.set(server.id, server);
+    customMcpMarketplace.set(parsed.id, parsed);
+    saveMcpServers();
+    saveCustomMcpMarketplace();
+    addEvent("zh:mcp:custom_installed", `Installed custom MCP ${server.name}`);
+    res.status(201).json(server);
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/mcp/marketplace/import-url", async (req, res) => {
+  const { url } = (req.body ?? {}) as { url?: string };
+  const registryUrl = url?.trim() ?? "";
+  if (!/^https?:\/\//i.test(registryUrl)) return res.status(400).json({ error: "Registry URL must start with http:// or https://" });
+  try {
+    const { body } = await fetchJson(registryUrl);
+    const imported: McpMarketplaceItem[] = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+    for (const item of extractMcpRegistryItems(body)) {
+      try {
+        const normalized = normalizeMcpMarketplaceItem(item);
+        customMcpMarketplace.set(normalized.id, normalized);
+        imported.push(normalized);
+      } catch (error) {
+        skipped.push({ name: String((item as { name?: unknown })?.name ?? "unknown"), reason: (error as Error).message });
+      }
+    }
+    saveCustomMcpMarketplace();
+    addEvent("zh:mcp:marketplace_imported", `Imported ${imported.length} MCP marketplace entries`);
+    res.status(201).json({ imported: imported.length, skipped, marketplace: listMcpMarketplace() });
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+  }
 });
 
 app.put("/api/mcp/:serverId", (req, res) => {
