@@ -730,6 +730,14 @@ function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
     "- If push fails because of credentials, protected branch rules, missing remote, or network, set disposition to `blocked` with the exact git error and the next owner/action. Do not mark the issue done.",
     "- If the task is planning, research, or discussion only and no files changed, explicitly write `git_push: not_applicable` in `ZH_OUTCOME`.",
     "",
+    "## Required GitHub Actions visibility",
+    "",
+    "- GitHub Actions is shared observability for every technical role, not only QA. CTO, backend, frontend, Android/mobile, DevOps, maintenance, and QA may inspect CI when their work touches code, deployment, tests, or staging.",
+    "- After pushing to `staging`, inspect the latest workflow run for that branch before marking delivery complete. Prefer `gh run list --branch staging --limit 5` and `gh run view <run-id> --log-failed` when GitHub CLI is authenticated, or use GitHub MCP/API when configured.",
+    "- If CI fails, do not keep looping on the same issue. Summarize the failing workflow/job/step, include the first useful log excerpt, and create or delegate a concrete follow-up to the role that owns the failing area.",
+    "- If CI cannot be checked because `gh` is missing, GitHub MCP is unavailable, or credentials are not configured, set `ci_status: blocked` or `ci_status: not_available` with the exact missing capability and next owner/action.",
+    "- QA owns final validation, but every technical agent owns reading the CI signal for the code it changed.",
+    "",
     "## Required output markers",
     "",
     "When work finishes, add a concise comment using this exact shape so Hermes can learn:",
@@ -740,6 +748,7 @@ function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
     "summary: <one or two sentences>",
     "files: <comma separated files or none>",
     "git_push: pushed_to_staging|not_applicable|blocked",
+    "ci_status: passed|failed|not_available|blocked|not_applicable",
     "skills_used: <comma separated skills>",
     "next: <clear next owner/action or none>",
     "```",
@@ -798,25 +807,27 @@ function paperclipAdapterConfig(value: unknown): Record<string, unknown> {
   return typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function findZeroHumanAgentForPaperclipAgent(row: { name: string; role: string }): Agent | undefined {
+function inferZeroHumanRoleForPaperclipAgent(row: { name: string; role: string; title?: string | null }): AgentRole | undefined {
   const normalizedName = slug(row.name);
   const normalizedRole = slug(row.role);
-  const exact = Array.from(agents.values()).find((agent) =>
-    slug(agent.id) === normalizedName ||
-    slug(agent.role) === normalizedRole ||
-    slug(agent.id) === normalizedRole
-  );
-  if (exact) return exact;
-
   const aliases: Record<string, AgentRole> = {
     chief_technology_officer: "cto",
     technical_lead: "cto",
+    tech_lead: "cto",
     engineer: "backend",
     backend_engineer: "backend",
     frontend_engineer: "frontend",
+    androiddev: "frontend",
+    android_dev: "frontend",
+    android_developer: "frontend",
+    mobile_engineer: "frontend",
+    mobile_developer: "frontend",
     quality_engineer: "qa",
     qa_engineer: "qa",
+    qa: "qa",
+    tester: "qa",
     devops_engineer: "devops",
+    dev_ops: "devops",
     designer: "design",
     ux_designer: "design",
     uxdesigner: "design",
@@ -832,8 +843,49 @@ function findZeroHumanAgentForPaperclipAgent(row: { name: string; role: string }
     finance_operations: "finance",
     operations: "operations"
   };
-  const aliasedRole = aliases[normalizedRole] ?? aliases[normalizedName];
-  return aliasedRole ? Array.from(agents.values()).find((agent) => agent.role === aliasedRole) : undefined;
+  const title = slug(row.title ?? "");
+  const text = `${normalizedName} ${normalizedRole} ${title}`;
+  if (aliases[normalizedRole] || aliases[normalizedName] || aliases[title]) {
+    return aliases[normalizedRole] ?? aliases[normalizedName] ?? aliases[title];
+  }
+  if (/\b(android|mobile|kotlin|flutter|react_native|ios|swift)\b/.test(text)) return "frontend";
+  if (/\b(qa|quality|tester|test|e2e|regression)\b/.test(text)) return "qa";
+  if (/\b(devops|infra|deploy|ci|sre|platform)\b/.test(text)) return "devops";
+  if (/\b(api|backend|server|database)\b/.test(text)) return "backend";
+  if (/\b(frontend|react|web|ui)\b/.test(text)) return "frontend";
+  if (normalizedRole in roleSkillCatalog) return normalizedRole as AgentRole;
+  return undefined;
+}
+
+function syntheticZeroHumanAgentForPaperclipAgent(row: { name: string; role: string; title?: string | null }, role: AgentRole): Agent {
+  return {
+    id: slug(row.name) || role,
+    role,
+    brain: "hermes",
+    memory: "persistent",
+    modelCombo: roleModelCombo(role),
+    executor: roleExecutor(role),
+    maxBudgetUsd: roleBudget(role),
+    status: "idle",
+    skills: [],
+    schedule: null,
+    costAccumulatedUsd: 0
+  };
+}
+
+function findZeroHumanAgentForPaperclipAgent(row: { name: string; role: string; title?: string | null }): Agent | undefined {
+  const normalizedName = slug(row.name);
+  const normalizedRole = slug(row.role);
+  const exact = Array.from(agents.values()).find((agent) =>
+    slug(agent.id) === normalizedName ||
+    slug(agent.role) === normalizedRole ||
+    slug(agent.id) === normalizedRole
+  );
+  if (exact) return exact;
+
+  const inferredRole = inferZeroHumanRoleForPaperclipAgent(row);
+  const existingRoleAgent = inferredRole ? Array.from(agents.values()).find((agent) => agent.role === inferredRole) : undefined;
+  return existingRoleAgent ?? (inferredRole ? syntheticZeroHumanAgentForPaperclipAgent(row, inferredRole) : undefined);
 }
 
 function paperclipNativeDesiredSkillsForRole(row: { name: string; role: string }): string[] {
@@ -1717,7 +1769,8 @@ function paperclipHermesGuidance(input: {
     "- Take one concrete action: create/update artifact, delegate child issue, request/hire the missing role, or ask one owner decision.",
     "- Before stopping, set the Paperclip issue disposition/status explicitly: done, in_review, delegated, blocked with a named unblocker, or cancelled.",
     "- If repository code changed, verify, commit, and push to `origin HEAD:staging`; if push fails, block with the exact git error.",
-    "- Finish with `ZH_OUTCOME` including status, summary, files/artifacts, git_push, skills_used, and next.",
+    "- If repository code was pushed or deployment is involved, inspect GitHub Actions when GitHub CLI, GitHub MCP, or GitHub API credentials are available. All technical roles may read CI; QA is not the only CI reader.",
+    "- Finish with `ZH_OUTCOME` including status, summary, files/artifacts, git_push, ci_status, skills_used, and next.",
     "",
     "Hermes memory and Zero-Human role/MCP guidance are available in this agent's skills. Use them before broad repo scans."
   ].join("\n");
@@ -2915,6 +2968,8 @@ function stableHash(value: unknown): string {
 }
 
 function paperclipRunbook(agent: Agent, skills: string[], tools: PaperclipAgentSyncRecord["desiredMcpServers"]): string {
+  const techRoles: AgentRole[] = ["cto", "backend", "frontend", "qa", "devops"];
+  const isTechRole = techRoles.includes(agent.role) || agent.role.includes("android") || agent.role.includes("mobile");
   return [
     `Create or update Paperclip agent '${agent.id}' for role '${agent.role}'.`,
     `Adapter: ${agent.executor}. Model combo: ${agent.modelCombo}.`,
@@ -2922,6 +2977,11 @@ function paperclipRunbook(agent: Agent, skills: string[], tools: PaperclipAgentS
     `Required skill set: ${skills.slice(0, 18).join(", ") || "none"}.`,
     `Assigned MCP: ${tools.map((tool) => tool.name).join(", ") || "none"}. Sequential Thinking MCP is mandatory for every agent as the baseline thinking pattern.`,
     "Delivery rule: if this agent changes repo code, it must verify, commit, and push to `origin HEAD:staging` before marking work done. If push is impossible, mark the issue blocked with the exact git error.",
+    ...(isTechRole
+      ? [
+          "CI visibility rule: this technical role may inspect GitHub Actions. After a staging push, check the latest workflow run with `gh run list --branch staging --limit 5` and `gh run view <run-id> --log-failed`, or GitHub MCP/API when configured. If CI fails, create/delegate a concrete follow-up with failing workflow, job, step, and log excerpt."
+        ]
+      : []),
     "If Paperclip does not have this agent yet, create it first, then mark this Zero-Human sync record as applied."
   ].join("\n");
 }
