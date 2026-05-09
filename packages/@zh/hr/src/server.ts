@@ -1631,6 +1631,10 @@ function hermesInterventionCooldownMs(trigger: PaperclipHermesInterventionTrigge
   return 20 * 60 * 1000;
 }
 
+function isPaperclipRecoveryIssueTitle(title: string): boolean {
+  return /^(Recover missing next step|Review productivity|Resolve checkout conflict|.+ recovery audit)/i.test(title.trim());
+}
+
 function publicPaperclipHermesInterventionReport(): PaperclipHermesInterventionReport {
   const report = latestPaperclipHermesInterventionReport ?? {
     id: "paperclip_hermes_interventions_not_run",
@@ -1702,6 +1706,7 @@ function paperclipHermesGuidance(input: {
     "Required next response:",
     "- State the smallest verified fact you checked.",
     "- Take one concrete action: create/update artifact, delegate child issue, request/hire the missing role, or ask one owner decision.",
+    "- Before stopping, set the Paperclip issue disposition/status explicitly: done, in_review, delegated, blocked with a named unblocker, or cancelled.",
     "- Finish with `ZH_OUTCOME` including status, summary, files/artifacts, skills_used, and next.",
     "",
     "Hermes memory and Zero-Human role/MCP guidance are available in this agent's skills. Use them before broad repo scans."
@@ -1750,6 +1755,7 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
       failed_runs_hour: number;
       agent_comments_hour: number;
       missing_disposition: boolean;
+      recent_hermes_intervention: boolean;
     }>(
       `with issue_signals as (
          select i.id::text as issue_id,
@@ -1787,13 +1793,22 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
                      and c.author_type = 'system'
                      and c.body ilike '%MISSING ISSUE DISPOSITION%'
                      and c.created_at > now() - interval '6 hours'
-                ) as missing_disposition
+                ) as missing_disposition,
+                exists (
+                  select 1
+                    from issue_comments c
+                   where c.company_id = i.company_id
+                     and c.issue_id = i.id
+                     and c.metadata->>'source' = 'zero-human-hermes-live-brain'
+                     and c.created_at > now() - interval '2 hours'
+                ) as recent_hermes_intervention
            from issues i
            left join agents a on a.id = i.assignee_agent_id
            left join heartbeat_runs hr on hr.id = i.execution_run_id
           where i.company_id = $1
             and i.hidden_at is null
             and i.status not in ('done', 'cancelled')
+            and i.title !~* '^(Recover missing next step|Review productivity|Resolve checkout conflict|.+ recovery audit)'
        )
        select *
          from issue_signals
@@ -1816,9 +1831,21 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
     for (const row of candidates.rows) {
       const trigger = choosePaperclipHermesTrigger(row);
       if (!trigger) continue;
+      if (isPaperclipRecoveryIssueTitle(row.title)) {
+        report.details.push({
+          issueId: row.issue_id,
+          issueKey: row.issue_key,
+          title: row.title,
+          trigger,
+          action: "ignored",
+          assignee: row.assignee_name ?? undefined,
+          reason: "Skipped Paperclip recovery/meta issue to avoid recovery loops."
+        });
+        continue;
+      }
       const stateKey = `${row.issue_id}:${trigger}`;
       const last = state[stateKey] ? new Date(state[stateKey]).getTime() : 0;
-      if (last && Date.now() - last < hermesInterventionCooldownMs(trigger)) {
+      if (row.recent_hermes_intervention || (last && Date.now() - last < hermesInterventionCooldownMs(trigger))) {
         report.skippedCooldown += 1;
         report.details.push({
           issueId: row.issue_id,
@@ -1827,7 +1854,9 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
           trigger,
           action: "cooldown_skipped",
           assignee: row.assignee_name ?? undefined,
-          reason: "Hermes already intervened recently for this trigger."
+          reason: row.recent_hermes_intervention
+            ? "Hermes already left live-brain guidance recently in Paperclip."
+            : "Hermes already intervened recently for this trigger."
         });
         continue;
       }
@@ -1864,7 +1893,8 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
         [companyId, row.issue_id, body, JSON.stringify(metadata)]
       );
       let wokeAgent = false;
-      if (row.assignee_agent_id) {
+      const shouldWakeAgent = row.assignee_agent_id && trigger !== "blocked_issue" && trigger !== "missing_disposition";
+      if (shouldWakeAgent) {
         const idempotencyKey = `zh-hermes:${row.issue_id}:${trigger}:${Math.floor(Date.now() / hermesInterventionCooldownMs(trigger))}`;
         const wake = await client.query(
           `insert into agent_wakeup_requests
