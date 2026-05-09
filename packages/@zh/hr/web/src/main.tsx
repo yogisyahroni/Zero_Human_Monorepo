@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
-type ViewId = "operations" | "agents" | "memory" | "gateway" | "mcp";
+type ViewId = "operations" | "agents" | "memory" | "gateway" | "mcp" | "workroom";
 
 type Agent = {
   id: string;
@@ -264,6 +264,38 @@ type AgentIssuePolicyEvaluation = {
   suggestedAssignee: string;
   requiresHumanReview: boolean;
 };
+type WorkroomRun = {
+  id: string;
+  shortId: string;
+  status: string;
+  agentName: string;
+  agentRole: string;
+  issueKey?: string;
+  issueTitle?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt?: string;
+  durationSec?: number;
+  model?: string;
+  adapterType?: string;
+  invocationSource?: string;
+  workingDir?: string;
+  workspaceReady: boolean;
+  terminal: string[];
+  fileChanges: Array<{ path: string; status: string }>;
+  diffStat: string[];
+  gitError?: string;
+};
+type WorkroomState = {
+  ok: boolean;
+  companyId?: string;
+  updatedAt: string;
+  activeRuns: number;
+  changedFiles: number;
+  unavailable: boolean;
+  error?: string;
+  runs: WorkroomRun[];
+};
 
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
@@ -416,6 +448,14 @@ const fallbackState: State = {
   budget: { global: 0, allocated: 0, spent: 0, currency: "USD" },
   combos: {}
 };
+const fallbackWorkroom: WorkroomState = {
+  ok: false,
+  updatedAt: "",
+  activeRuns: 0,
+  changedFiles: 0,
+  unavailable: true,
+  runs: []
+};
 
 function money(value: number): string {
   return `$${value.toFixed(value >= 10 ? 0 : 3)}`;
@@ -461,12 +501,22 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
     title: "MCP control plane",
     description: "Install Model Context Protocol servers, manage JSON config, and assign tools to company roles.",
     icon: <PackageSearch size={19} />
+  },
+  {
+    id: "workroom",
+    label: "Workroom",
+    eyebrow: "Codex monitor",
+    title: "Codex Workroom",
+    description: "Watch Paperclip/Codex runs, terminal output, workspace paths, and files changed by agents.",
+    icon: <TerminalSquare size={19} />
   }
 ];
 
 function App() {
   const [state, setState] = useState<State>(fallbackState);
+  const [workroom, setWorkroom] = useState<WorkroomState>(fallbackWorkroom);
   const [activeView, setActiveView] = useState<ViewId>("operations");
+  const [selectedWorkroomRunId, setSelectedWorkroomRunId] = useState("");
   const [selectedAgent, setSelectedAgent] = useState("cto");
   const [description, setDescription] = useState("Create an architecture plan for the authentication module.");
   const [type, setType] = useState("architecture");
@@ -547,9 +597,20 @@ function App() {
     setState(await response.json());
   }
 
+  async function refreshWorkroom() {
+    const response = await fetch("/api/workroom");
+    setWorkroom(await response.json());
+  }
+
   useEffect(() => {
     refresh();
     const interval = window.setInterval(refresh, 1800);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    refreshWorkroom();
+    const interval = window.setInterval(refreshWorkroom, 3500);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -584,6 +645,7 @@ function App() {
     const haystack = [item.name, item.description, item.category, ...(item.tags ?? []), item.packageName].join(" ").toLowerCase();
     return haystack.includes(mcpQuery.toLowerCase());
   });
+  const selectedWorkroomRun = workroom.runs.find((run) => run.id === selectedWorkroomRunId) ?? workroom.runs[0];
 
   useEffect(() => {
     if (!workRepositories.some((repo) => repo.id === repositoryId)) {
@@ -1088,6 +1150,102 @@ function App() {
         )}
 
         <section className="grid">
+          {activeView === "workroom" && (
+          <div className="panel workroomRuns">
+            <div className="panelHead">
+              <div>
+                <h2>Live Codex runs</h2>
+                <p>{workroom.unavailable ? workroom.error ?? "Paperclip data unavailable." : `${workroom.activeRuns} active runs - ${workroom.changedFiles} changed files detected`}</p>
+              </div>
+              <button onClick={refreshWorkroom}>
+                <RefreshCw size={15} /> Refresh
+              </button>
+            </div>
+            <div className="workroomList">
+              {workroom.runs.map((run) => (
+                <button
+                  className={`workroomRun ${run.status} ${selectedWorkroomRun?.id === run.id ? "active" : ""}`}
+                  key={run.id}
+                  onClick={() => setSelectedWorkroomRunId(run.id)}
+                >
+                  <span>
+                    <strong>{run.agentName}</strong>
+                    <small>{run.agentRole} - {run.shortId}</small>
+                  </span>
+                  <span>
+                    <Status value={run.status} />
+                    <small>{run.durationSec ?? 0}s</small>
+                  </span>
+                  <em>{run.issueKey ? `${run.issueKey} - ${run.issueTitle ?? "Untitled issue"}` : run.invocationSource ?? "heartbeat"}</em>
+                </button>
+              ))}
+              {!workroom.runs.length && <div className="empty">No Paperclip/Codex runs observed yet.</div>}
+            </div>
+          </div>
+          )}
+
+          {activeView === "workroom" && (
+          <div className="panel workroomTerminal">
+            <div className="panelHead">
+              <div>
+                <h2>Terminal mirror</h2>
+                <p>{selectedWorkroomRun?.workingDir ?? "Select a run to inspect its workspace."}</p>
+              </div>
+              <TerminalSquare size={20} />
+            </div>
+            {selectedWorkroomRun ? (
+              <>
+                <div className="runMeta">
+                  <span><strong>Agent</strong>{selectedWorkroomRun.agentName}</span>
+                  <span><strong>Model</strong>{selectedWorkroomRun.model ?? "unknown"}</span>
+                  <span><strong>Adapter</strong>{selectedWorkroomRun.adapterType ?? "unknown"}</span>
+                </div>
+                <pre className="terminalPane">{selectedWorkroomRun.terminal.length ? selectedWorkroomRun.terminal.join("\n") : "No terminal output captured yet."}</pre>
+              </>
+            ) : (
+              <div className="empty">Pick a run from the left panel.</div>
+            )}
+          </div>
+          )}
+
+          {activeView === "workroom" && (
+          <div className="panel workroomFiles">
+            <div className="panelHead">
+              <div>
+                <h2>Changed files</h2>
+                <p>Git status from the agent workspace, read directly from Paperclip when needed.</p>
+              </div>
+              <FolderGit2 size={20} />
+            </div>
+            {selectedWorkroomRun?.gitError && <div className="inlineError">{selectedWorkroomRun.gitError}</div>}
+            <div className="fileChangeList">
+              {(selectedWorkroomRun?.fileChanges ?? []).map((file) => (
+                <div className="fileChange" key={`${file.status}-${file.path}`}>
+                  <span>{file.status}</span>
+                  <code>{file.path}</code>
+                </div>
+              ))}
+              {selectedWorkroomRun && !selectedWorkroomRun.fileChanges.length && !selectedWorkroomRun.gitError && (
+                <div className="empty">No uncommitted file changes detected.</div>
+              )}
+              {!selectedWorkroomRun && <div className="empty">Select a run to see file changes.</div>}
+            </div>
+          </div>
+          )}
+
+          {activeView === "workroom" && (
+          <div className="panel workroomDiff">
+            <div className="panelHead">
+              <div>
+                <h2>Diff summary</h2>
+                <p>Short stat of code added, updated, or removed in the selected workspace.</p>
+              </div>
+              <GitBranch size={20} />
+            </div>
+            <pre className="terminalPane compact">{selectedWorkroomRun?.diffStat.length ? selectedWorkroomRun.diffStat.join("\n") : "No diff stat available."}</pre>
+          </div>
+          )}
+
           {activeView === "agents" && (
           <div className="panel agents">
             <div className="panelHead">

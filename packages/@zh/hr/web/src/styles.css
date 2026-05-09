@@ -998,6 +998,134 @@ textarea {
   place-items: center;
   color: var(--muted);
 }
+.workroomRuns,
+.workroomTerminal,
+.workroomFiles,
+.workroomDiff {
+  min-width: 0;
+}
+.workroomList {
+  display: grid;
+  gap: 10px;
+}
+.workroomRun {
+  width: 100%;
+  min-height: 82px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(150px, .8fr) auto;
+  gap: 8px 12px;
+  text-align: left;
+  justify-content: stretch;
+  align-items: start;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.workroomRun:hover,
+.workroomRun.active {
+  border-color: var(--accent-2);
+}
+.workroomRun.running,
+.workroomRun.queued {
+  border-color: rgba(100, 210, 200, .65);
+}
+.workroomRun.failed,
+.workroomRun.error {
+  border-color: rgba(255, 107, 93, .6);
+}
+.workroomRun span {
+  display: grid;
+  gap: 4px;
+}
+.workroomRun span:last-of-type {
+  justify-items: end;
+}
+.workroomRun small,
+.workroomRun em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 12px;
+}
+.workroomRun em {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+.runMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.runMeta span {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.runMeta strong {
+  display: block;
+  color: var(--accent-2);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.terminalPane {
+  margin: 0;
+  min-height: 260px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0c0f0f;
+  padding: 12px;
+  color: #d7ded7;
+  font: 12px/1.55 "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.terminalPane.compact {
+  min-height: 160px;
+  max-height: 260px;
+}
+.inlineError {
+  border: 1px solid rgba(255, 107, 93, .65);
+  background: rgba(55, 27, 25, .75);
+  color: #ffaaa2;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.fileChangeList {
+  display: grid;
+  gap: 8px;
+}
+.fileChange {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+}
+.fileChange span {
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 12px;
+  text-align: center;
+  border: 1px solid #3a403e;
+  border-radius: 999px;
+  padding: 2px 0;
+}
+.fileChange code {
+  color: #d7ded7;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
 
 @media (max-width: 980px) {
   .shell { grid-template-columns: 1fr; }
@@ -1016,4 +1144,11 @@ textarea {
   .mcpImportGrid { grid-template-columns: 1fr; }
   .issuePolicyTester { grid-template-columns: 1fr; }
   .mcpSummary, .mcpCardFooter, .mcpActions { align-items: flex-start; justify-content: flex-start; flex-direction: column; }
+  .runMeta,
+  .workroomRun {
+    grid-template-columns: 1fr;
+  }
+  .workroomRun span:last-of-type {
+    justify-items: start;
+  }
 }

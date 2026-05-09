@@ -59,6 +59,8 @@ const paperclipChatSignalsPath = path.join(stateDir, "paperclip-chat-signals.jso
 const paperclipHermesInterventionsPath = path.join(stateDir, "paperclip-hermes-interventions.json");
 const issuePoliciesPath = path.join(stateDir, "agent-issue-policies.json");
 const paperclipDatabaseUrl = process.env.PAPERCLIP_DATABASE_URL ?? process.env.ZH_PAPERCLIP_DATABASE_URL ?? "";
+const dockerHostUrl = (process.env.DOCKER_HOST ?? "").replace(/^tcp:\/\//, "http://");
+const paperclipContainerName = process.env.PAPERCLIP_CONTAINER_NAME ?? "zero-human-paperclip-1";
 type ServiceHealth = {
   name: string;
   url: string;
@@ -296,6 +298,42 @@ type PaperclipHermesInterventionReport = {
   }>;
   error?: string;
   createdAt: string;
+};
+type WorkroomFileChange = {
+  path: string;
+  status: string;
+};
+type WorkroomRun = {
+  id: string;
+  shortId: string;
+  status: string;
+  agentName: string;
+  agentRole: string;
+  issueKey?: string;
+  issueTitle?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt?: string;
+  durationSec?: number;
+  model?: string;
+  adapterType?: string;
+  invocationSource?: string;
+  workingDir?: string;
+  workspaceReady: boolean;
+  terminal: string[];
+  fileChanges: WorkroomFileChange[];
+  diffStat: string[];
+  gitError?: string;
+};
+type WorkroomState = {
+  ok: boolean;
+  companyId?: string;
+  updatedAt: string;
+  activeRuns: number;
+  changedFiles: number;
+  unavailable: boolean;
+  error?: string;
+  runs: WorkroomRun[];
 };
 type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
 type AgentIssuePolicy = {
@@ -3432,6 +3470,38 @@ async function runGit(args: string[], cwd = sourceRepoPath, env: NodeJS.ProcessE
   return [stdout, stderr].filter(Boolean).join("\n").trim();
 }
 
+async function dockerExec(container: string, command: string[], cwd?: string): Promise<string> {
+  if (!dockerHostUrl) throw new Error("DOCKER_HOST is not configured.");
+  const createResponse = await fetch(`${dockerHostUrl}/containers/${encodeURIComponent(container)}/exec`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: true,
+      Cmd: command,
+      WorkingDir: cwd
+    })
+  });
+  if (!createResponse.ok) {
+    throw new Error(`Docker exec create failed: ${createResponse.status} ${await createResponse.text()}`);
+  }
+  const created = (await createResponse.json()) as { Id?: string };
+  if (!created.Id) throw new Error("Docker exec create returned no exec id.");
+  const startResponse = await fetch(`${dockerHostUrl}/exec/${encodeURIComponent(created.Id)}/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ Detach: false, Tty: true })
+  });
+  const output = Buffer.from(await startResponse.arrayBuffer()).toString("utf8").trim();
+  if (!startResponse.ok) throw new Error(`Docker exec start failed: ${startResponse.status} ${output}`);
+  return output;
+}
+
+async function runPaperclipGit(args: string[], cwd: string): Promise<string> {
+  return dockerExec(paperclipContainerName, ["git", ...args], cwd);
+}
+
 async function ensureSourceRepo(repository = defaultRepository()): Promise<void> {
   if (fs.existsSync(path.join(repository.path, ".git"))) {
     await withRepositoryGitEnv(repository, async (env) => {
@@ -3522,6 +3592,254 @@ async function taskDiff(task: Task): Promise<{ status: string; diff: string }> {
   const status = await runGit(["status", "--short"], worktreePath);
   const diff = await runGit(["diff", "--", "."], worktreePath);
   return { status, diff };
+}
+
+function iso(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return value;
+  return undefined;
+}
+
+function arrayFromText(value: string | undefined | null): string[] {
+  return (value ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+}
+
+function pickNestedString(value: unknown, paths: string[][]): string | undefined {
+  for (const parts of paths) {
+    let current: unknown = value;
+    for (const part of parts) {
+      if (!current || typeof current !== "object") {
+        current = undefined;
+        break;
+      }
+      current = (current as Record<string, unknown>)[part];
+    }
+    if (typeof current === "string" && current.trim()) return current;
+  }
+  return undefined;
+}
+
+function modelFromContext(context: unknown): string | undefined {
+  const commandArgs = Array.isArray((context as { commandArgs?: unknown[] } | null)?.commandArgs)
+    ? ((context as { commandArgs: unknown[] }).commandArgs as unknown[])
+    : [];
+  const modelIndex = commandArgs.findIndex((entry) => entry === "--model");
+  const model = modelIndex >= 0 ? commandArgs[modelIndex + 1] : undefined;
+  return typeof model === "string" ? model : undefined;
+}
+
+function workingDirFromContext(context: unknown): string | undefined {
+  return pickNestedString(context, [
+    ["paperclipWorkspace", "cwd"],
+    ["paperclipWorkspace", "realization", "local", "path"],
+    ["paperclipEnvironment", "workspaceRealization", "local", "path"],
+    ["cwd"]
+  ]);
+}
+
+function parseGitStatus(status: string): WorkroomFileChange[] {
+  return status
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .slice(0, 80)
+    .map((line) => ({
+      status: line.slice(0, 2).trim() || "?",
+      path: line.slice(3).trim() || line
+    }));
+}
+
+async function workspaceGitSnapshot(cwd: string | undefined): Promise<{
+  workspaceReady: boolean;
+  fileChanges: WorkroomFileChange[];
+  diffStat: string[];
+  gitError?: string;
+}> {
+  if (!cwd) return { workspaceReady: false, fileChanges: [], diffStat: [], gitError: "No workspace path recorded." };
+  if (!fs.existsSync(cwd)) {
+    if (cwd.startsWith("/paperclip/")) {
+      try {
+        await runPaperclipGit(["rev-parse", "--is-inside-work-tree"], cwd);
+        const status = await runPaperclipGit(["status", "--short"], cwd);
+        const diffStat = await runPaperclipGit(["diff", "--stat"], cwd).catch(() => "");
+        return {
+          workspaceReady: true,
+          fileChanges: parseGitStatus(status),
+          diffStat: arrayFromText(diffStat).slice(0, 24)
+        };
+      } catch (error) {
+        return {
+          workspaceReady: false,
+          fileChanges: [],
+          diffStat: [],
+          gitError: `Paperclip workspace is not readable through Docker: ${(error as Error).message}`
+        };
+      }
+    }
+    return { workspaceReady: false, fileChanges: [], diffStat: [], gitError: `Workspace not mounted in Zero-Human: ${cwd}` };
+  }
+  try {
+    await runGit(["rev-parse", "--is-inside-work-tree"], cwd);
+    const status = await runGit(["status", "--short"], cwd);
+    const diffStat = await runGit(["diff", "--stat"], cwd).catch(() => "");
+    return {
+      workspaceReady: true,
+      fileChanges: parseGitStatus(status),
+      diffStat: arrayFromText(diffStat).slice(0, 24)
+    };
+  } catch (error) {
+    return {
+      workspaceReady: true,
+      fileChanges: [],
+      diffStat: [],
+      gitError: (error as Error).message
+    };
+  }
+}
+
+async function paperclipWorkroomState(): Promise<WorkroomState> {
+  const state: WorkroomState = {
+    ok: true,
+    updatedAt: new Date().toISOString(),
+    activeRuns: 0,
+    changedFiles: 0,
+    unavailable: false,
+    runs: []
+  };
+  if (!paperclipDatabaseUrl) {
+    return { ...state, ok: false, unavailable: true, error: "PAPERCLIP_DATABASE_URL is not configured." };
+  }
+
+  const client = await getPaperclipPool().connect();
+  try {
+    const companyId = await resolvePaperclipCompanyId(client);
+    state.companyId = companyId;
+    const runs = await client.query<{
+      id: string;
+      status: string;
+      invocation_source: string;
+      started_at: Date | null;
+      finished_at: Date | null;
+      updated_at: Date | null;
+      context_snapshot: unknown;
+      result_json: unknown;
+      stdout_excerpt: string | null;
+      stderr_excerpt: string | null;
+      adapter_type: string | null;
+      agent_name: string | null;
+      agent_role: string | null;
+      issue_identifier: string | null;
+      issue_title: string | null;
+    }>(
+      `
+      select
+        r.id::text,
+        r.status,
+        r.invocation_source,
+        r.started_at,
+        r.finished_at,
+        r.updated_at,
+        r.context_snapshot,
+        r.result_json,
+        r.stdout_excerpt,
+        r.stderr_excerpt,
+        a.name as agent_name,
+        a.role as agent_role,
+        a.adapter_type,
+        i.identifier as issue_identifier,
+        i.title as issue_title
+      from heartbeat_runs r
+      left join agents a on a.id = r.agent_id
+      left join lateral (
+        select identifier, title
+        from issues
+        where company_id = r.company_id
+          and (execution_run_id = r.id or checkout_run_id = r.id)
+        order by updated_at desc
+        limit 1
+      ) i on true
+      where r.company_id = $1
+      order by
+        case when r.status in ('running', 'queued') then 0 else 1 end,
+        coalesce(r.started_at, r.updated_at) desc
+      limit 12
+      `,
+      [companyId]
+    );
+
+    const runIds = runs.rows.map((run) => run.id);
+    const eventRows = runIds.length
+      ? await client.query<{ run_id: string; seq: number; stream: string | null; event_type: string; message: string | null; payload: unknown }>(
+          `
+          select run_id::text, seq, stream, event_type, message, payload
+          from heartbeat_run_events
+          where company_id = $1 and run_id = any($2::uuid[])
+          order by run_id, seq
+          `,
+          [companyId, runIds]
+        )
+      : { rows: [] as Array<{ run_id: string; seq: number; stream: string | null; event_type: string; message: string | null; payload: unknown }> };
+    const eventsByRun = new Map<string, string[]>();
+    for (const event of eventRows.rows) {
+      const label = event.stream ?? event.event_type;
+      const message = event.message ?? pickNestedString(event.payload, [["summary"], ["command"], ["status"]]) ?? "";
+      if (!message.trim()) continue;
+      const lines = eventsByRun.get(event.run_id) ?? [];
+      lines.push(`[${label}] ${message}`.slice(0, 500));
+      eventsByRun.set(event.run_id, lines);
+    }
+
+    const snapshots = await Promise.all(
+      runs.rows.map(async (run) => {
+        const workingDir = workingDirFromContext(run.context_snapshot);
+        const git = await workspaceGitSnapshot(workingDir);
+        const startedAt = iso(run.started_at);
+        const finishedAt = iso(run.finished_at);
+        const durationSec = run.started_at
+          ? Math.max(0, Math.round(((run.finished_at ?? new Date()).getTime() - run.started_at.getTime()) / 1000))
+          : undefined;
+        const terminal = [
+          ...(eventsByRun.get(run.id) ?? []),
+          ...arrayFromText(run.stdout_excerpt),
+          ...arrayFromText(run.stderr_excerpt).map((line) => `[stderr] ${line}`)
+        ].slice(-80);
+        return {
+          id: run.id,
+          shortId: run.id.slice(0, 8),
+          status: run.status,
+          agentName: run.agent_name ?? "Unknown agent",
+          agentRole: run.agent_role ?? "unknown",
+          issueKey: run.issue_identifier ?? undefined,
+          issueTitle: run.issue_title ?? undefined,
+          startedAt,
+          finishedAt,
+          updatedAt: iso(run.updated_at),
+          durationSec,
+          model: modelFromContext(run.context_snapshot),
+          adapterType: run.adapter_type ?? pickNestedString(run.context_snapshot, [["adapterType"]]),
+          invocationSource: run.invocation_source,
+          workingDir,
+          workspaceReady: git.workspaceReady,
+          terminal,
+          fileChanges: git.fileChanges,
+          diffStat: git.diffStat,
+          gitError: git.gitError
+        } satisfies WorkroomRun;
+      })
+    );
+    state.runs = snapshots;
+    state.activeRuns = snapshots.filter((run) => ["running", "queued"].includes(run.status)).length;
+    state.changedFiles = snapshots.reduce((sum, run) => sum + run.fileChanges.length, 0);
+    return state;
+  } catch (error) {
+    return { ...state, ok: false, unavailable: true, error: (error as Error).message };
+  } finally {
+    client.release();
+  }
 }
 
 async function cleanupWorktree(task: Task): Promise<void> {
@@ -3997,6 +4315,10 @@ app.post("/api/agent-issues/evaluate", (req, res) => {
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
   }
+});
+
+app.get("/api/workroom", async (_req, res) => {
+  res.json(await paperclipWorkroomState());
 });
 
 app.get("/api/state", async (_req, res) => {
