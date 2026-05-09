@@ -860,6 +860,7 @@ type PaperclipAgentRow = {
   name: string;
   role: string;
   title: string | null;
+  status?: string | null;
   adapter_type: string;
   adapter_config: unknown;
   runtime_config: unknown;
@@ -1132,8 +1133,8 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       reason: "Zero-Human did not create missing agents during bridge sync; Paperclip remains the hiring and execution authority."
     });
 
-    const agentResult = await client.query<{ id: string; name: string; role: string; adapter_config: unknown }>(
-      "select id::text, name, role, adapter_config from agents where company_id = $1 order by created_at asc",
+    const agentResult = await client.query<{ id: string; name: string; role: string; title: string | null; status: string; adapter_config: unknown }>(
+      "select id::text, name, role, title, status, adapter_config from agents where company_id = $1 and status <> 'terminated' order by created_at asc",
       [companyId]
     );
     report.agentsScanned = agentResult.rows.length;
@@ -1144,12 +1145,8 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         ? syncValue.desiredSkills.map(String).filter(Boolean)
         : [];
       const zeroHumanAgent = findZeroHumanAgentForPaperclipAgent(row);
-      const zeroHumanSkillKeys: string[] = [];
-      if (zeroHumanAgent) {
-        for (const skillId of desiredSkillsForAgentProfile(zeroHumanAgent)) {
-          zeroHumanSkillKeys.push(await upsertZeroHumanPaperclipSkill(client, companyId, skillId, report.createdAt, zeroHumanAgent.role));
-        }
-      }
+      const desiredZeroHumanSkillIds = desiredSkillIdsForPaperclipAgent(row, zeroHumanAgent);
+      const zeroHumanSkillKeys = desiredZeroHumanSkillIds.map(zeroHumanPaperclipSkillKey);
       const nativeSkillKeys = paperclipNativeDesiredSkillsForRole(row);
       const desiredMcpServers = zeroHumanAgent
         ? enabledMcpServersForAgent(zeroHumanAgent)
@@ -1165,8 +1162,8 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         ? existingMcpSync.servers
         : [];
       const desiredUnchanged =
-        JSON.stringify(existingDesired) === JSON.stringify(desiredSkills)
-        && JSON.stringify(existingMcpServers) === JSON.stringify(desiredMcpServers);
+        sameStringSet(existingDesired, desiredSkills)
+        && sameStringSet(mcpServerIds(existingMcpServers), desiredMcpServers.map((server) => server.id));
       if (desiredUnchanged) {
         report.details.push({
           agentId: row.id,
@@ -1178,6 +1175,9 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
             : `Agent already has Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers selected. No matching Zero-Human role was found for extra skill mapping.`
         });
         continue;
+      }
+      for (const skillId of desiredZeroHumanSkillIds) {
+        await upsertZeroHumanPaperclipSkill(client, companyId, skillId, report.createdAt, zeroHumanAgent?.role ?? "backend");
       }
       const nextConfig = {
         ...configValue,
@@ -1209,7 +1209,7 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
     }
     await client.query("commit");
 
-    if (await rememberInHermes("zero_human_owner", `Paperclip Hermes bridge synced: ${report.agentsPatched}/${report.agentsScanned} agents patched with ${hermesProtocolSkillKey}.`)) {
+    if (report.agentsPatched > 0 && await rememberInHermes("zero_human_owner", `Paperclip Hermes bridge synced: ${report.agentsPatched}/${report.agentsScanned} agents patched with ${hermesProtocolSkillKey}.`)) {
       report.memoryNotesWritten += 1;
       report.details.push({ action: "memory_written", reason: "Bridge sync note persisted in Hermes memory." });
     }
@@ -1243,6 +1243,57 @@ function publicPaperclipHermesBridgeReport(): PaperclipHermesBridgeReport {
     ...report,
     details: report.details.slice(0, 60)
   };
+}
+
+function sameStringSet(a: string[], b: string[]): boolean {
+  const left = Array.from(new Set(a)).sort();
+  const right = Array.from(new Set(b)).sort();
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function mcpServerIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((server) => {
+      if (typeof server === "string") return server;
+      if (server && typeof server === "object" && "id" in server) return String((server as { id?: unknown }).id ?? "");
+      return "";
+    })
+    .filter(Boolean);
+}
+
+let paperclipHermesAutoSyncRunning = false;
+let paperclipHermesAutoSyncQueued = false;
+
+async function runPaperclipHermesAutoSync(reason: string): Promise<void> {
+  if (paperclipHermesAutoSyncRunning) {
+    paperclipHermesAutoSyncQueued = true;
+    return;
+  }
+  paperclipHermesAutoSyncRunning = true;
+  paperclipHermesAutoSyncQueued = false;
+  try {
+    const report = await syncHermesBridgeToPaperclip();
+    if (report.unavailable) {
+      addEvent("paperclip_hermes_auto_sync", `Auto sync skipped: ${report.error}`);
+    } else if (report.agentsPatched > 0) {
+      addEvent("paperclip_hermes_auto_sync", `Auto sync patched ${report.agentsPatched}/${report.agentsScanned} Paperclip agents (${reason}).`);
+    }
+  } catch (error) {
+    addEvent("paperclip_hermes_auto_sync", `Auto sync failed: ${(error as Error).message}`);
+  } finally {
+    paperclipHermesAutoSyncRunning = false;
+    if (paperclipHermesAutoSyncQueued) {
+      setTimeout(() => void runPaperclipHermesAutoSync("queued"), 1000);
+    }
+  }
+}
+
+function schedulePaperclipHermesAutoSync(reason: string): void {
+  if (!paperclipDatabaseUrl) return;
+  if (paperclipHermesAutoSyncQueued) return;
+  paperclipHermesAutoSyncQueued = true;
+  setTimeout(() => void runPaperclipHermesAutoSync(reason), 1500);
 }
 
 function readyWorkRepositories(): RegisteredRepository[] {
@@ -2091,6 +2142,7 @@ const skillCategoryRules: Array<[RegExp, string]> = [
 ];
 
 const skillRoleRules: Array<[RegExp, AgentRole[]]> = [
+  [/android|kotlin|mobile|react native|flutter|ios|swift/, ["frontend", "backend", "qa", "cto"]],
   [/frontend|react|web|ui|ux|css|browser|accessibility/, ["frontend", "design", "qa"]],
   [/design|figma|brand|creative|image|video/, ["design", "marketing", "product"]],
   [/backend|api|database|server|integration|sdk/, ["backend", "cto", "qa"]],
@@ -2383,6 +2435,56 @@ function desiredSkillsForAgentProfile(agent: Agent): string[] {
     ...roleSkillCatalog[agent.role],
     ...agent.skills,
     ...registrySkills
+  ])).sort();
+}
+
+function searchableWords(value: string): Set<string> {
+  const expanded = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_./:-]+/g, " ")
+    .toLowerCase();
+  return new Set(expanded.split(/\W+/).filter((word) => word.length >= 3));
+}
+
+function paperclipAgentSkillContext(row: { name: string; role: string; title?: string | null }, agent?: Agent): Set<string> {
+  return searchableWords([
+    row.name,
+    row.role,
+    row.title ?? "",
+    agent?.id ?? "",
+    agent?.role ?? "",
+    ...(agent?.skills ?? [])
+  ].join(" "));
+}
+
+function registrySkillsForPaperclipAgent(row: { name: string; role: string; title?: string | null }, agent?: Agent): string[] {
+  const context = paperclipAgentSkillContext(row, agent);
+  const matched = Object.entries(activeSkillRegistry()).filter(([skillId, definition]) => {
+    if (agent && definition.roles.includes(agent.role)) return true;
+    const searchable = searchableWords([
+      skillId,
+      definition.category,
+      definition.description,
+      definition.sourcePath ?? "",
+      ...(definition.triggers ?? []),
+      ...(definition.tools ?? [])
+    ].join(" "));
+    for (const word of context) {
+      if (searchable.has(word)) return true;
+    }
+    for (const word of searchable) {
+      if (context.has(word)) return true;
+    }
+    return false;
+  });
+  return matched.map(([skillId]) => skillId).sort();
+}
+
+function desiredSkillIdsForPaperclipAgent(row: { name: string; role: string; title?: string | null }, agent?: Agent): string[] {
+  const roleSkills = agent ? desiredSkillsForAgentProfile(agent) : [];
+  return Array.from(new Set([
+    ...roleSkills,
+    ...registrySkillsForPaperclipAgent(row, agent)
   ])).sort();
 }
 
@@ -3314,6 +3416,7 @@ app.post("/api/paperclip/skills/sync", async (_req, res) => {
       ? `Paperclip skill sync unavailable: ${report.error}`
       : `Synced ${report.imported} new and ${report.updated} updated Zero-Human skills to Paperclip.`
   );
+  if (!report.unavailable) schedulePaperclipHermesAutoSync("paperclip skill sync");
   res.status(report.unavailable ? 503 : 200).json(report);
 });
 
@@ -3548,6 +3651,7 @@ app.post("/api/skills/import-repo", async (req, res) => {
     if (repository.id !== "default") await ensureSourceRepo(repository);
     const report = importSkillsFromRepository(repository, skillPath?.trim() ?? "");
     addEvent("zh:skills:imported", `Imported ${report.imported}/${report.scanned} skills from ${repository.name}`);
+    schedulePaperclipHermesAutoSync("skill import");
     res.status(201).json(report);
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
@@ -3580,6 +3684,7 @@ app.post("/api/mcp/install", (req, res) => {
   mcpServers.set(server.id, server);
   saveMcpServers();
   addEvent("zh:mcp:installed", `Installed ${server.name}`);
+  schedulePaperclipHermesAutoSync("mcp install");
   res.status(201).json(server);
 });
 
@@ -3599,6 +3704,7 @@ app.post("/api/mcp/custom", (req, res) => {
     saveMcpServers();
     saveCustomMcpMarketplace();
     addEvent("zh:mcp:custom_installed", `Installed custom MCP ${server.name}`);
+    schedulePaperclipHermesAutoSync("custom mcp install");
     res.status(201).json(server);
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
@@ -3642,6 +3748,7 @@ app.put("/api/mcp/:serverId", (req, res) => {
   mcpServers.set(next.id, next);
   saveMcpServers();
   addEvent("zh:mcp:updated", `Updated ${next.name}`);
+  schedulePaperclipHermesAutoSync("mcp update");
   res.json(next);
 });
 
@@ -3937,6 +4044,12 @@ app.get("*", (_req, res) => {
 });
 
 const port = Number(process.env.PORT ?? config.orchestrator.port);
+const paperclipHermesAutoSyncIntervalMs = Number(process.env.PAPERCLIP_HERMES_SYNC_INTERVAL_MS ?? 120000);
 app.listen(port, config.orchestrator.host, () => {
   console.log(`[hr] listening on http://${config.orchestrator.host}:${port}`);
+  schedulePaperclipHermesAutoSync("startup");
+  if (Number.isFinite(paperclipHermesAutoSyncIntervalMs) && paperclipHermesAutoSyncIntervalMs > 0) {
+    const timer = setInterval(() => schedulePaperclipHermesAutoSync("periodic"), paperclipHermesAutoSyncIntervalMs);
+    if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
 });
