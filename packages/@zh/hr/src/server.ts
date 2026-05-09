@@ -722,6 +722,14 @@ function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
     "- For blocked work: name the missing owner/path/credential, record what was checked, and set disposition to `blocked` only with a concrete unblocker or `ZH_ESCALATION`.",
     "- For delegated work: create child issues with assignees and set disposition to `delegated` or `in_review`.",
     "",
+    "## Required Git delivery",
+    "",
+    "- If the task changes repository code, completion is not valid until the change is committed and pushed to the `staging` branch.",
+    "- Before pushing, run the smallest relevant verification command available for the repo, then run `git status --short` and include the result summary in the final comment.",
+    "- Preferred delivery command is `git push origin HEAD:staging`. If the repo is already on `staging`, `git push origin staging` is acceptable.",
+    "- If push fails because of credentials, protected branch rules, missing remote, or network, set disposition to `blocked` with the exact git error and the next owner/action. Do not mark the issue done.",
+    "- If the task is planning, research, or discussion only and no files changed, explicitly write `git_push: not_applicable` in `ZH_OUTCOME`.",
+    "",
     "## Required output markers",
     "",
     "When work finishes, add a concise comment using this exact shape so Hermes can learn:",
@@ -731,6 +739,7 @@ function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
     "status: done|blocked|in_review|delegated",
     "summary: <one or two sentences>",
     "files: <comma separated files or none>",
+    "git_push: pushed_to_staging|not_applicable|blocked",
     "skills_used: <comma separated skills>",
     "next: <clear next owner/action or none>",
     "```",
@@ -1707,7 +1716,8 @@ function paperclipHermesGuidance(input: {
     "- State the smallest verified fact you checked.",
     "- Take one concrete action: create/update artifact, delegate child issue, request/hire the missing role, or ask one owner decision.",
     "- Before stopping, set the Paperclip issue disposition/status explicitly: done, in_review, delegated, blocked with a named unblocker, or cancelled.",
-    "- Finish with `ZH_OUTCOME` including status, summary, files/artifacts, skills_used, and next.",
+    "- If repository code changed, verify, commit, and push to `origin HEAD:staging`; if push fails, block with the exact git error.",
+    "- Finish with `ZH_OUTCOME` including status, summary, files/artifacts, git_push, skills_used, and next.",
     "",
     "Hermes memory and Zero-Human role/MCP guidance are available in this agent's skills. Use them before broad repo scans."
   ].join("\n");
@@ -2911,6 +2921,7 @@ function paperclipRunbook(agent: Agent, skills: string[], tools: PaperclipAgentS
     `Hermes supplies memory, skill selection, and MCP guidance before Codex execution.`,
     `Required skill set: ${skills.slice(0, 18).join(", ") || "none"}.`,
     `Assigned MCP: ${tools.map((tool) => tool.name).join(", ") || "none"}. Sequential Thinking MCP is mandatory for every agent as the baseline thinking pattern.`,
+    "Delivery rule: if this agent changes repo code, it must verify, commit, and push to `origin HEAD:staging` before marking work done. If push is impossible, mark the issue blocked with the exact git error.",
     "If Paperclip does not have this agent yet, create it first, then mark this Zero-Human sync record as applied."
   ].join("\n");
 }
