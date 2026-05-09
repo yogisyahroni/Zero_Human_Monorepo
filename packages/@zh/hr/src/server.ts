@@ -729,15 +729,9 @@ const hermesProtocolSkillKey = "zero-human/hermes-operating-protocol";
 const hermesProtocolSkillSlug = "hermes-operating-protocol";
 const maxRegistrySkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_REGISTRY_SKILLS_PER_AGENT ?? 8));
 const maxManualPaperclipSkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_MANUAL_PAPERCLIP_SKILLS_PER_AGENT ?? 4));
-const defaultPaperclipModel = process.env.CODEX_MODEL ?? "combotest";
 
 function heartbeatConcurrencyForRole(role: string): number {
   return role.toLowerCase() === "cto" ? 2 : 1;
-}
-
-function normalizePaperclipModel(model: unknown): string {
-  const value = typeof model === "string" ? model.trim() : "";
-  return value || defaultPaperclipModel;
 }
 
 function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
@@ -1143,7 +1137,7 @@ async function ensurePaperclipAgentForZeroHumanAgent(
   const desiredMcpServers = enabledMcpServersForAgent(agent);
   const adapterConfig: Record<string, unknown> = {
     ...baseConfig,
-    model: normalizePaperclipModel(baseConfig.model),
+    model: typeof baseConfig.model === "string" && baseConfig.model.trim() ? baseConfig.model : "combotest",
     paperclipSkillSync: {
       ...paperclipAdapterConfig(baseConfig.paperclipSkillSync),
       desiredSkills
@@ -1335,8 +1329,7 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       const desiredUnchanged =
         sameStringSet(existingDesired, desiredSkills)
         && sameStringSet(mcpServerIds(existingMcpServers), desiredMcpServers.map((server) => server.id))
-        && JSON.stringify(runtimeValue.heartbeat ?? {}) === JSON.stringify(nextRuntimeConfig.heartbeat)
-        && configValue.model === normalizePaperclipModel(configValue.model);
+        && JSON.stringify(runtimeValue.heartbeat ?? {}) === JSON.stringify(nextRuntimeConfig.heartbeat);
       if (desiredUnchanged) {
         report.details.push({
           agentId: row.id,
@@ -1354,7 +1347,6 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       }
       const nextConfig = {
         ...configValue,
-        model: normalizePaperclipModel(configValue.model),
         paperclipSkillSync: {
           ...syncValue,
           desiredSkills
