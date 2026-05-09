@@ -727,6 +727,18 @@ function publicPaperclipSkillSyncReport(): PaperclipSkillSyncReport {
 
 const hermesProtocolSkillKey = "zero-human/hermes-operating-protocol";
 const hermesProtocolSkillSlug = "hermes-operating-protocol";
+const maxRegistrySkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_REGISTRY_SKILLS_PER_AGENT ?? 8));
+const maxManualPaperclipSkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_MANUAL_PAPERCLIP_SKILLS_PER_AGENT ?? 4));
+const defaultPaperclipModel = process.env.CODEX_MODEL ?? "combotest";
+
+function heartbeatConcurrencyForRole(role: string): number {
+  return role.toLowerCase() === "cto" ? 2 : 1;
+}
+
+function normalizePaperclipModel(model: unknown): string {
+  const value = typeof model === "string" ? model.trim() : "";
+  return value || defaultPaperclipModel;
+}
 
 function hermesOperatingProtocolMarkdown(memory: BrainMemorySummary): string {
   const topSkills = memory.skills
@@ -1131,7 +1143,7 @@ async function ensurePaperclipAgentForZeroHumanAgent(
   const desiredMcpServers = enabledMcpServersForAgent(agent);
   const adapterConfig: Record<string, unknown> = {
     ...baseConfig,
-    model: typeof baseConfig.model === "string" && baseConfig.model.trim() ? baseConfig.model : "combotest",
+    model: normalizePaperclipModel(baseConfig.model),
     paperclipSkillSync: {
       ...paperclipAdapterConfig(baseConfig.paperclipSkillSync),
       desiredSkills
@@ -1152,7 +1164,7 @@ async function ensurePaperclipAgentForZeroHumanAgent(
     heartbeat: {
       enabled: true,
       wakeOnDemand: true,
-      maxConcurrentRuns: agent.role === "cto" ? 6 : 3
+      maxConcurrentRuns: heartbeatConcurrencyForRole(agent.role)
     }
   };
   const permissions = ["ceo", "cto", "product", "operations"].includes(agent.role)
@@ -1256,8 +1268,26 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       reason: "Zero-Human did not create missing agents during bridge sync; Paperclip remains the hiring and execution authority."
     });
 
-    const agentResult = await client.query<{ id: string; name: string; role: string; title: string | null; status: string; adapter_config: unknown }>(
-      "select id::text, name, role, title, status, adapter_config from agents where company_id = $1 and status <> 'terminated' order by created_at asc",
+    const legacyAgentResult = await client.query<{ id: string; name: string; role: string }>(
+      `update agents
+          set runtime_config = jsonb_set(coalesce(runtime_config, '{}'::jsonb), '{heartbeat,enabled}', 'false'::jsonb, true),
+              updated_at = now()
+        where company_id <> $1
+          and status <> 'terminated'
+          and coalesce(runtime_config->'heartbeat'->>'enabled', 'true') <> 'false'
+        returning id::text, name, role`,
+      [companyId]
+    );
+    if (legacyAgentResult.rows.length > 0) {
+      report.agentsPatched += legacyAgentResult.rows.length;
+      report.details.push({
+        action: "skipped",
+        reason: `Paused ${legacyAgentResult.rows.length} legacy Paperclip agents from older companies so only the current owner-selected company can run heartbeats.`
+      });
+    }
+
+    const agentResult = await client.query<{ id: string; name: string; role: string; title: string | null; status: string; adapter_config: unknown; runtime_config: unknown }>(
+      "select id::text, name, role, title, status, adapter_config, runtime_config from agents where company_id = $1 and status <> 'terminated' order by created_at asc",
       [companyId]
     );
     report.agentsScanned = agentResult.rows.length;
@@ -1271,6 +1301,13 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       const desiredZeroHumanSkillIds = desiredSkillIdsForPaperclipAgent(row, zeroHumanAgent);
       const zeroHumanSkillKeys = desiredZeroHumanSkillIds.map(zeroHumanPaperclipSkillKey);
       const nativeSkillKeys = paperclipNativeDesiredSkillsForRole(row);
+      const preservedManualSkills = existingDesired
+        .filter((skill) =>
+          skill !== hermesProtocolSkillKey
+          && !skill.startsWith("zero-human/")
+          && !nativeSkillKeys.includes(skill)
+        )
+        .slice(0, maxManualPaperclipSkillsPerAgent);
       const desiredMcpServers = zeroHumanAgent
         ? enabledMcpServersForAgent(zeroHumanAgent)
         : paperclipNativeMcpServersForRole(row);
@@ -1278,15 +1315,28 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         hermesProtocolSkillKey,
         ...nativeSkillKeys,
         ...zeroHumanSkillKeys,
-        ...existingDesired
+        ...preservedManualSkills
       ]));
       const existingMcpSync = paperclipAdapterConfig(configValue.zeroHumanMcpSync);
       const existingMcpServers = Array.isArray(existingMcpSync.servers)
         ? existingMcpSync.servers
         : [];
+      const runtimeValue = paperclipAdapterConfig(row.runtime_config);
+      const heartbeatValue = paperclipAdapterConfig(runtimeValue.heartbeat);
+      const nextRuntimeConfig = {
+        ...runtimeValue,
+        heartbeat: {
+          ...heartbeatValue,
+          enabled: true,
+          wakeOnDemand: true,
+          maxConcurrentRuns: heartbeatConcurrencyForRole(row.role)
+        }
+      };
       const desiredUnchanged =
         sameStringSet(existingDesired, desiredSkills)
-        && sameStringSet(mcpServerIds(existingMcpServers), desiredMcpServers.map((server) => server.id));
+        && sameStringSet(mcpServerIds(existingMcpServers), desiredMcpServers.map((server) => server.id))
+        && JSON.stringify(runtimeValue.heartbeat ?? {}) === JSON.stringify(nextRuntimeConfig.heartbeat)
+        && configValue.model === normalizePaperclipModel(configValue.model);
       if (desiredUnchanged) {
         report.details.push({
           agentId: row.id,
@@ -1304,6 +1354,7 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       }
       const nextConfig = {
         ...configValue,
+        model: normalizePaperclipModel(configValue.model),
         paperclipSkillSync: {
           ...syncValue,
           desiredSkills
@@ -1316,8 +1367,8 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         }
       };
       await client.query(
-        "update agents set adapter_config = $3::jsonb, updated_at = now() where company_id = $1 and id = $2",
-        [companyId, row.id, JSON.stringify(nextConfig)]
+        "update agents set adapter_config = $3::jsonb, runtime_config = $4::jsonb, updated_at = now() where company_id = $1 and id = $2",
+        [companyId, row.id, JSON.stringify(nextConfig), JSON.stringify(nextRuntimeConfig)]
       );
       report.agentsPatched += 1;
       report.details.push({
@@ -2930,13 +2981,10 @@ function resetPaperclipSyncState(): PaperclipSyncState {
 }
 
 function desiredSkillsForAgentProfile(agent: Agent): string[] {
-  const registrySkills = Object.entries(activeSkillRegistry())
-    .filter(([, definition]) => definition.roles.includes(agent.role))
-    .map(([skill]) => skill);
   return Array.from(new Set([
     ...roleSkillCatalog[agent.role],
     ...agent.skills,
-    ...registrySkills
+    ...rankedRegistrySkillsForAgent(agent, maxRegistrySkillsPerAgent)
   ])).sort();
 }
 
@@ -2961,8 +3009,9 @@ function paperclipAgentSkillContext(row: { name: string; role: string; title?: s
 
 function registrySkillsForPaperclipAgent(row: { name: string; role: string; title?: string | null }, agent?: Agent): string[] {
   const context = paperclipAgentSkillContext(row, agent);
-  const matched = Object.entries(activeSkillRegistry()).filter(([skillId, definition]) => {
-    if (agent && definition.roles.includes(agent.role)) return true;
+  const matched = Object.entries(activeSkillRegistry()).flatMap(([skillId, definition]) => {
+    let score = 0;
+    if (agent && definition.roles.includes(agent.role)) score += 6;
     const searchable = searchableWords([
       skillId,
       definition.category,
@@ -2972,14 +3021,18 @@ function registrySkillsForPaperclipAgent(row: { name: string; role: string; titl
       ...(definition.tools ?? [])
     ].join(" "));
     for (const word of context) {
-      if (searchable.has(word)) return true;
+      if (searchable.has(word)) score += 4;
     }
     for (const word of searchable) {
-      if (context.has(word)) return true;
+      if (context.has(word)) score += 2;
     }
-    return false;
+    return score > 0 ? [{ skillId, score }] : [];
   });
-  return matched.map(([skillId]) => skillId).sort();
+  return matched
+    .sort((a, b) => b.score - a.score || a.skillId.localeCompare(b.skillId))
+    .slice(0, maxRegistrySkillsPerAgent)
+    .map((match) => match.skillId)
+    .sort();
 }
 
 function desiredSkillIdsForPaperclipAgent(row: { name: string; role: string; title?: string | null }, agent?: Agent): string[] {
@@ -2988,6 +3041,38 @@ function desiredSkillIdsForPaperclipAgent(row: { name: string; role: string; tit
     ...roleSkills,
     ...registrySkillsForPaperclipAgent(row, agent)
   ])).sort();
+}
+
+function rankedRegistrySkillsForAgent(agent: Agent, limit: number): string[] {
+  if (limit <= 0) return [];
+  const roleWords = searchableWords([
+    agent.id,
+    agent.role,
+    ...roleSkillCatalog[agent.role],
+    ...agent.skills
+  ].join(" "));
+  return Object.entries(activeSkillRegistry())
+    .flatMap(([skillId, definition]) => {
+      let score = definition.roles.includes(agent.role) ? 6 : 0;
+      const searchable = searchableWords([
+        skillId,
+        definition.category,
+        definition.description,
+        definition.sourcePath ?? "",
+        ...(definition.triggers ?? []),
+        ...(definition.tools ?? [])
+      ].join(" "));
+      for (const word of roleWords) {
+        if (searchable.has(word)) score += 3;
+      }
+      for (const word of searchable) {
+        if (roleWords.has(word)) score += 1;
+      }
+      return score > 0 ? [{ skillId, score }] : [];
+    })
+    .sort((a, b) => b.score - a.score || a.skillId.localeCompare(b.skillId))
+    .slice(0, limit)
+    .map((match) => match.skillId);
 }
 
 function enabledMcpForAgent(agent: Agent): PaperclipAgentSyncRecord["desiredMcpServers"] {
