@@ -56,6 +56,7 @@ const mcpRegistryPath = path.join(stateDir, "mcp-servers.json");
 const mcpMarketplacePath = path.join(stateDir, "mcp-marketplace.json");
 const paperclipSyncPath = path.join(stateDir, "paperclip-sync.json");
 const paperclipChatSignalsPath = path.join(stateDir, "paperclip-chat-signals.json");
+const paperclipHermesInterventionsPath = path.join(stateDir, "paperclip-hermes-interventions.json");
 const issuePoliciesPath = path.join(stateDir, "agent-issue-policies.json");
 const paperclipDatabaseUrl = process.env.PAPERCLIP_DATABASE_URL ?? process.env.ZH_PAPERCLIP_DATABASE_URL ?? "";
 type ServiceHealth = {
@@ -274,6 +275,28 @@ type PaperclipHermesBridgeReport = {
   error?: string;
   createdAt: string;
 };
+type PaperclipHermesInterventionTrigger = "blocked_issue" | "missing_disposition" | "failed_run" | "high_churn" | "stale_in_progress";
+type PaperclipHermesInterventionReport = {
+  id: string;
+  companyId?: string;
+  scanned: number;
+  intervened: number;
+  skippedCooldown: number;
+  wakeupsQueued: number;
+  memoryNotesWritten: number;
+  unavailable: boolean;
+  details: Array<{
+    issueId: string;
+    issueKey: string;
+    title: string;
+    trigger: PaperclipHermesInterventionTrigger;
+    action: "commented" | "commented_and_woke_agent" | "cooldown_skipped" | "ignored";
+    assignee?: string;
+    reason: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
 type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
 type AgentIssuePolicy = {
   role: AgentRole;
@@ -339,6 +362,7 @@ let latestPaperclipSkillSync: PaperclipSkillSyncReport | null = null;
 let latestPaperclipRepositorySync: PaperclipRepositorySyncReport | null = null;
 let latestPaperclipChatSignalReport: PaperclipChatSignalReport | null = null;
 let latestPaperclipHermesBridgeReport: PaperclipHermesBridgeReport | null = null;
+let latestPaperclipHermesInterventionReport: PaperclipHermesInterventionReport | null = null;
 let paperclipPool: Pool | null = null;
 
 function activeSkillRegistry(): Record<string, SkillDefinition> {
@@ -1296,6 +1320,43 @@ function schedulePaperclipHermesAutoSync(reason: string): void {
   setTimeout(() => void runPaperclipHermesAutoSync(reason), 1500);
 }
 
+let paperclipHermesMonitorRunning = false;
+let paperclipHermesMonitorQueued = false;
+
+async function runPaperclipHermesMonitor(reason: string): Promise<void> {
+  if (paperclipHermesMonitorRunning) {
+    paperclipHermesMonitorQueued = true;
+    return;
+  }
+  paperclipHermesMonitorRunning = true;
+  paperclipHermesMonitorQueued = false;
+  try {
+    const report = await scanPaperclipHermesInterventions();
+    if (report.unavailable) {
+      addEvent("paperclip_hermes_live_brain", `Hermes live brain skipped: ${report.error}`);
+    } else if (report.intervened > 0 || report.wakeupsQueued > 0) {
+      addEvent(
+        "paperclip_hermes_live_brain",
+        `Hermes live brain intervened on ${report.intervened}/${report.scanned} Paperclip issues and queued ${report.wakeupsQueued} wakeups (${reason}).`
+      );
+    }
+  } catch (error) {
+    addEvent("paperclip_hermes_live_brain", `Hermes live brain failed: ${(error as Error).message}`);
+  } finally {
+    paperclipHermesMonitorRunning = false;
+    if (paperclipHermesMonitorQueued) {
+      setTimeout(() => void runPaperclipHermesMonitor("queued"), 1000);
+    }
+  }
+}
+
+function schedulePaperclipHermesMonitor(reason: string): void {
+  if (!paperclipDatabaseUrl) return;
+  if (paperclipHermesMonitorQueued) return;
+  paperclipHermesMonitorQueued = true;
+  setTimeout(() => void runPaperclipHermesMonitor(reason), 2500);
+}
+
 function readyWorkRepositories(): RegisteredRepository[] {
   return Array.from(repositories.values())
     .filter((repository) => (repository.sourceKind ?? "work") === "work" && repository.status === "ready")
@@ -1545,6 +1606,316 @@ function publicPaperclipChatSignalReport(): PaperclipChatSignalReport {
     ...report,
     details: report.details.slice(0, 20)
   };
+}
+
+function loadPaperclipHermesInterventionState(): Record<string, string> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(paperclipHermesInterventionsPath, "utf8")) as { lastIntervenedAt?: Record<string, string> };
+    return raw.lastIntervenedAt ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function savePaperclipHermesInterventionState(lastIntervenedAt: Record<string, string>): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    paperclipHermesInterventionsPath,
+    JSON.stringify({ lastIntervenedAt, updatedAt: new Date().toISOString() }, null, 2)
+  );
+}
+
+function hermesInterventionCooldownMs(trigger: PaperclipHermesInterventionTrigger): number {
+  if (trigger === "high_churn") return 45 * 60 * 1000;
+  if (trigger === "stale_in_progress") return 30 * 60 * 1000;
+  return 20 * 60 * 1000;
+}
+
+function publicPaperclipHermesInterventionReport(): PaperclipHermesInterventionReport {
+  const report = latestPaperclipHermesInterventionReport ?? {
+    id: "paperclip_hermes_interventions_not_run",
+    scanned: 0,
+    intervened: 0,
+    skippedCooldown: 0,
+    wakeupsQueued: 0,
+    memoryNotesWritten: 0,
+    unavailable: !paperclipDatabaseUrl,
+    details: [],
+    error: paperclipDatabaseUrl ? undefined : "PAPERCLIP_DATABASE_URL is not configured.",
+    createdAt: new Date(0).toISOString()
+  } satisfies PaperclipHermesInterventionReport;
+  return {
+    ...report,
+    details: report.details.slice(0, 20)
+  };
+}
+
+function choosePaperclipHermesTrigger(row: {
+  status: string;
+  run_status: string | null;
+  run_error: string | null;
+  error_code: string | null;
+  liveness_state: string | null;
+  liveness_reason: string | null;
+  failed_runs_hour: number;
+  agent_comments_hour: number;
+  missing_disposition: boolean;
+  updated_at: string;
+}): PaperclipHermesInterventionTrigger | null {
+  if (row.missing_disposition) return "missing_disposition";
+  if (row.status === "blocked") return "blocked_issue";
+  if (["failed", "error"].includes(row.run_status ?? "") || row.run_error || row.error_code) return "failed_run";
+  if (row.failed_runs_hour >= 3 || row.agent_comments_hour >= 8) return "high_churn";
+  const updatedAt = new Date(row.updated_at).getTime();
+  if (row.status === "in_progress" && Number.isFinite(updatedAt) && Date.now() - updatedAt > 10 * 60 * 1000) return "stale_in_progress";
+  return null;
+}
+
+function paperclipHermesGuidance(input: {
+  issueKey: string;
+  title: string;
+  status: string;
+  trigger: PaperclipHermesInterventionTrigger;
+  assignee?: string | null;
+  runStatus?: string | null;
+  livenessReason?: string | null;
+  nextAction?: string | null;
+}): string {
+  const reasonLine = input.livenessReason || input.nextAction || input.runStatus || input.status;
+  const triggerGuidance: Record<PaperclipHermesInterventionTrigger, string> = {
+    blocked_issue: "Blocked is an escalation state, not a stopping state. Diagnose the blocker, then fix it, delegate it, hire/request the missing role, or ask the owner one concrete decision.",
+    missing_disposition: "The run finished without a valid disposition. Add a concrete disposition now: done, in_review, delegated, blocked with unblocker, or cancelled.",
+    failed_run: "Do not retry the same broad prompt. Read the failing run evidence, narrow the next command, and either repair the config/code or delegate to the role that can.",
+    high_churn: "This issue is showing churn. Stop broad exploration, summarize known facts, pick the smallest next action, and create a child issue if another role is needed.",
+    stale_in_progress: "The issue has been in progress without fresh movement. Reconfirm the current workspace and next action, then produce an artifact, delegation, or explicit blocker."
+  };
+  return [
+    "ZH_HERMES_INTERVENTION",
+    "",
+    `Issue: ${input.issueKey} - ${input.title}`,
+    `Trigger: ${input.trigger}`,
+    `Assignee: ${input.assignee ?? "unassigned"}`,
+    `Observed: ${reasonLine}`,
+    "",
+    triggerGuidance[input.trigger],
+    "",
+    "Required next response:",
+    "- State the smallest verified fact you checked.",
+    "- Take one concrete action: create/update artifact, delegate child issue, request/hire the missing role, or ask one owner decision.",
+    "- Finish with `ZH_OUTCOME` including status, summary, files/artifacts, skills_used, and next.",
+    "",
+    "Hermes memory and Zero-Human role/MCP guidance are available in this agent's skills. Use them before broad repo scans."
+  ].join("\n");
+}
+
+async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterventionReport> {
+  const report: PaperclipHermesInterventionReport = {
+    id: `paperclip_hermes_live_${nanoid(8)}`,
+    scanned: 0,
+    intervened: 0,
+    skippedCooldown: 0,
+    wakeupsQueued: 0,
+    memoryNotesWritten: 0,
+    unavailable: false,
+    details: [],
+    createdAt: new Date().toISOString()
+  };
+  if (!paperclipDatabaseUrl) {
+    report.unavailable = true;
+    report.error = "PAPERCLIP_DATABASE_URL is not configured.";
+    latestPaperclipHermesInterventionReport = report;
+    return report;
+  }
+  const state = loadPaperclipHermesInterventionState();
+  const client = await getPaperclipPool().connect();
+  try {
+    const companyId = await resolvePaperclipCompanyId(client);
+    report.companyId = companyId;
+    const candidates = await client.query<{
+      issue_id: string;
+      issue_key: string;
+      title: string;
+      status: string;
+      priority: string;
+      updated_at: string;
+      assignee_agent_id: string | null;
+      assignee_name: string | null;
+      assignee_role: string | null;
+      run_status: string | null;
+      run_error: string | null;
+      error_code: string | null;
+      liveness_state: string | null;
+      liveness_reason: string | null;
+      next_action: string | null;
+      failed_runs_hour: number;
+      agent_comments_hour: number;
+      missing_disposition: boolean;
+    }>(
+      `with issue_signals as (
+         select i.id::text as issue_id,
+                coalesce(i.identifier, 'issue-' || i.issue_number::text, i.id::text) as issue_key,
+                i.title,
+                i.status,
+                i.priority,
+                i.updated_at::text as updated_at,
+                i.assignee_agent_id::text as assignee_agent_id,
+                a.name as assignee_name,
+                a.role as assignee_role,
+                hr.status as run_status,
+                hr.error as run_error,
+                hr.error_code,
+                hr.liveness_state,
+                hr.liveness_reason,
+                hr.next_action,
+                (select count(*)::int
+                   from heartbeat_runs r
+                  where r.company_id = i.company_id
+                    and r.agent_id = i.assignee_agent_id
+                    and r.created_at > now() - interval '1 hour'
+                    and (r.status in ('failed', 'error') or coalesce(r.exit_code, 0) <> 0 or r.error is not null)) as failed_runs_hour,
+                (select count(*)::int
+                   from issue_comments c
+                  where c.company_id = i.company_id
+                    and c.issue_id = i.id
+                    and c.author_agent_id = i.assignee_agent_id
+                    and c.created_at > now() - interval '1 hour') as agent_comments_hour,
+                exists (
+                  select 1
+                    from issue_comments c
+                   where c.company_id = i.company_id
+                     and c.issue_id = i.id
+                     and c.author_type = 'system'
+                     and c.body ilike '%MISSING ISSUE DISPOSITION%'
+                     and c.created_at > now() - interval '6 hours'
+                ) as missing_disposition
+           from issues i
+           left join agents a on a.id = i.assignee_agent_id
+           left join heartbeat_runs hr on hr.id = i.execution_run_id
+          where i.company_id = $1
+            and i.hidden_at is null
+            and i.status not in ('done', 'cancelled')
+       )
+       select *
+         from issue_signals
+        where status = 'blocked'
+           or missing_disposition
+           or run_status in ('failed', 'error')
+           or run_error is not null
+           or error_code is not null
+           or failed_runs_hour >= 3
+           or agent_comments_hour >= 8
+           or (status = 'in_progress' and updated_at::timestamptz < now() - interval '10 minutes')
+        order by
+          case priority when 'critical' then 0 when 'high' then 1 when 'medium' then 2 else 3 end,
+          updated_at::timestamptz desc
+        limit 25`,
+      [companyId]
+    );
+    report.scanned = candidates.rows.length;
+    let interventionsThisScan = 0;
+    for (const row of candidates.rows) {
+      const trigger = choosePaperclipHermesTrigger(row);
+      if (!trigger) continue;
+      const stateKey = `${row.issue_id}:${trigger}`;
+      const last = state[stateKey] ? new Date(state[stateKey]).getTime() : 0;
+      if (last && Date.now() - last < hermesInterventionCooldownMs(trigger)) {
+        report.skippedCooldown += 1;
+        report.details.push({
+          issueId: row.issue_id,
+          issueKey: row.issue_key,
+          title: row.title,
+          trigger,
+          action: "cooldown_skipped",
+          assignee: row.assignee_name ?? undefined,
+          reason: "Hermes already intervened recently for this trigger."
+        });
+        continue;
+      }
+      if (interventionsThisScan >= 3) {
+        report.details.push({
+          issueId: row.issue_id,
+          issueKey: row.issue_key,
+          title: row.title,
+          trigger,
+          action: "ignored",
+          assignee: row.assignee_name ?? undefined,
+          reason: "Scan intervention cap reached; this issue can be handled by the next cycle."
+        });
+        continue;
+      }
+      const body = paperclipHermesGuidance({
+        issueKey: row.issue_key,
+        title: row.title,
+        status: row.status,
+        trigger,
+        assignee: row.assignee_name,
+        runStatus: row.run_status,
+        livenessReason: row.liveness_reason,
+        nextAction: row.next_action
+      });
+      const metadata = {
+        source: "zero-human-hermes-live-brain",
+        trigger,
+        reportId: report.id,
+        createdAt: report.createdAt
+      };
+      await client.query(
+        "insert into issue_comments (company_id, issue_id, body, author_type, metadata) values ($1, $2, $3, 'system', $4::jsonb)",
+        [companyId, row.issue_id, body, JSON.stringify(metadata)]
+      );
+      let wokeAgent = false;
+      if (row.assignee_agent_id) {
+        const idempotencyKey = `zh-hermes:${row.issue_id}:${trigger}:${Math.floor(Date.now() / hermesInterventionCooldownMs(trigger))}`;
+        const wake = await client.query(
+          `insert into agent_wakeup_requests
+             (company_id, agent_id, source, trigger_detail, reason, payload, status, requested_by_actor_type, requested_by_actor_id, idempotency_key)
+           select $1, $2, 'zero_human_hermes_live_brain', $3, $4, $5::jsonb, 'queued', 'system', 'zero-human-hermes', $6
+            where not exists (
+              select 1 from agent_wakeup_requests
+               where company_id = $1
+                 and agent_id = $2
+                 and idempotency_key = $6
+                 and status in ('queued', 'claimed')
+            )`,
+          [
+            companyId,
+            row.assignee_agent_id,
+            `${trigger} on ${row.issue_key}`,
+            `Hermes intervention queued for ${row.issue_key}: ${trigger}`,
+            JSON.stringify({ issueId: row.issue_id, issueKey: row.issue_key, trigger, guidance: body }),
+            idempotencyKey
+          ]
+        );
+        wokeAgent = (wake.rowCount ?? 0) > 0;
+        if (wokeAgent) report.wakeupsQueued += 1;
+      }
+      state[stateKey] = report.createdAt;
+      report.intervened += 1;
+      interventionsThisScan += 1;
+      if (await rememberInHermes("zero_human_owner", `Hermes live brain intervened on ${row.issue_key} (${trigger}) assigned to ${row.assignee_name ?? "unassigned"}.`)) {
+        report.memoryNotesWritten += 1;
+      }
+      report.details.push({
+        issueId: row.issue_id,
+        issueKey: row.issue_key,
+        title: row.title,
+        trigger,
+        action: wokeAgent ? "commented_and_woke_agent" : "commented",
+        assignee: row.assignee_name ?? undefined,
+        reason: `Inserted Hermes guidance${wokeAgent ? " and queued assignee wakeup" : ""}.`
+      });
+    }
+    savePaperclipHermesInterventionState(state);
+    latestPaperclipHermesInterventionReport = report;
+    return report;
+  } catch (error) {
+    report.unavailable = true;
+    report.error = (error as Error).message;
+    latestPaperclipHermesInterventionReport = report;
+    return report;
+  } finally {
+    client.release();
+  }
 }
 
 async function scanPaperclipChatSignals(): Promise<PaperclipChatSignalReport> {
@@ -3465,6 +3836,21 @@ app.post("/api/paperclip/hermes/sync", async (_req, res) => {
   res.status(report.unavailable ? 503 : 200).json(report);
 });
 
+app.get("/api/paperclip/hermes/interventions", (_req, res) => {
+  res.json(publicPaperclipHermesInterventionReport());
+});
+
+app.post("/api/paperclip/hermes/interventions/scan", async (_req, res) => {
+  const report = await scanPaperclipHermesInterventions();
+  addEvent(
+    "paperclip_hermes_live_brain",
+    report.unavailable
+      ? `Hermes live brain unavailable: ${report.error}`
+      : `Hermes live brain scanned ${report.scanned} Paperclip issues and intervened on ${report.intervened}.`
+  );
+  res.status(report.unavailable ? 503 : 200).json(report);
+});
+
 app.get("/api/issue-policies", (_req, res) => {
   res.json(publicIssuePolicies());
 });
@@ -3553,6 +3939,7 @@ app.get("/api/state", async (_req, res) => {
     paperclipRepositorySync: publicPaperclipRepositorySyncReport(),
     paperclipChatSignals: publicPaperclipChatSignalReport(),
     paperclipHermesBridge: publicPaperclipHermesBridgeReport(),
+    paperclipHermesInterventions: publicPaperclipHermesInterventionReport(),
     issuePolicies: publicIssuePolicies(),
     mcpMarketplace: listMcpMarketplace(),
     mcpServers: publicMcpServers(),
@@ -4045,11 +4432,17 @@ app.get("*", (_req, res) => {
 
 const port = Number(process.env.PORT ?? config.orchestrator.port);
 const paperclipHermesAutoSyncIntervalMs = Number(process.env.PAPERCLIP_HERMES_SYNC_INTERVAL_MS ?? 120000);
+const paperclipHermesMonitorIntervalMs = Number(process.env.PAPERCLIP_HERMES_MONITOR_INTERVAL_MS ?? 60000);
 app.listen(port, config.orchestrator.host, () => {
   console.log(`[hr] listening on http://${config.orchestrator.host}:${port}`);
   schedulePaperclipHermesAutoSync("startup");
+  schedulePaperclipHermesMonitor("startup");
   if (Number.isFinite(paperclipHermesAutoSyncIntervalMs) && paperclipHermesAutoSyncIntervalMs > 0) {
     const timer = setInterval(() => schedulePaperclipHermesAutoSync("periodic"), paperclipHermesAutoSyncIntervalMs);
+    if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
+  if (Number.isFinite(paperclipHermesMonitorIntervalMs) && paperclipHermesMonitorIntervalMs > 0) {
+    const timer = setInterval(() => schedulePaperclipHermesMonitor("periodic"), paperclipHermesMonitorIntervalMs);
     if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
   }
 });
