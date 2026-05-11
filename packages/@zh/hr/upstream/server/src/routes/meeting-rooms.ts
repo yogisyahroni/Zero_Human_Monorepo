@@ -15,21 +15,26 @@ import {
 import {
   addMeetingRoomMessageSchema,
   addMeetingRoomParticipantSchema,
+  createIssueFromMeetingActionItemSchema,
   createMeetingRoomActionItemSchema,
   createMeetingRoomArtifactReferenceSchema,
   createMeetingRoomDecisionSchema,
   createMeetingRoomSchema,
+  meetingRoomDispositionSchema,
+  requestMeetingHireSchema,
+  updateMeetingRoomDecisionSchema,
   updateMeetingRoomSchema,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { logActivity } from "../services/index.js";
+import { issueService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 type EntityKind = "agent" | "issue" | "project";
 
 export function meetingRoomRoutes(db: Db) {
   const router = Router();
+  const issuesSvc = issueService(db);
 
   async function getRoom(companyId: string, roomId: string) {
     const [room] = await db
@@ -51,6 +56,23 @@ export function meetingRoomRoutes(db: Db) {
     if (!row) {
       throw unprocessable(`${kind} does not belong to this company`);
     }
+  }
+
+  function readOutcomeDisposition(outcome: unknown) {
+    if (!outcome || typeof outcome !== "object") return null;
+    const parsed = meetingRoomDispositionSchema.safeParse((outcome as Record<string, unknown>).disposition);
+    return parsed.success ? parsed.data : null;
+  }
+
+  function mergeOutcomeList(
+    outcome: Record<string, unknown> | null,
+    key: "followUpIssueIds" | "hiringRequests",
+    value: string,
+  ) {
+    const next: Record<string, unknown> = { ...(outcome ?? {}) };
+    const existing = Array.isArray(next[key]) ? next[key].filter((item): item is string => typeof item === "string") : [];
+    next[key] = [...new Set([...existing, value])];
+    return next;
   }
 
   router.get("/companies/:companyId/meeting-rooms", async (req, res) => {
@@ -197,6 +219,13 @@ export function meetingRoomRoutes(db: Db) {
       assertEntityBelongsToCompany("issue", companyId, body.issueId),
     ]);
 
+    const nextOutcome = body.outcome === undefined ? existing.outcome : body.outcome ?? null;
+    if ((body.status === "closed" || body.status === "archived") && !readOutcomeDisposition(nextOutcome)) {
+      throw unprocessable(
+        "Meeting rooms require an outcome.disposition before closing: no_action, decision_recorded, issues_created, blocked_by_owner, or hiring_requested",
+      );
+    }
+
     const now = new Date();
     const [room] = await db
       .update(meetingRooms)
@@ -207,7 +236,7 @@ export function meetingRoomRoutes(db: Db) {
         division: body.division === undefined ? existing.division : body.division ?? null,
         purpose: body.purpose === undefined ? existing.purpose : body.purpose ?? null,
         summary: body.summary === undefined ? existing.summary : body.summary ?? null,
-        outcome: body.outcome === undefined ? existing.outcome : body.outcome ?? null,
+        outcome: nextOutcome,
         closedAt:
           body.closedAt === undefined && (body.status === "closed" || body.status === "archived")
             ? now
@@ -299,6 +328,35 @@ export function meetingRoomRoutes(db: Db) {
     },
   );
 
+  router.patch(
+    "/companies/:companyId/meeting-rooms/:roomId/decisions/:decisionId",
+    validate(updateMeetingRoomDecisionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const roomId = req.params.roomId as string;
+      const decisionId = req.params.decisionId as string;
+      assertCompanyAccess(req, companyId);
+      if (!(await getRoom(companyId, roomId))) throw notFound("Meeting room not found");
+
+      const [decision] = await db
+        .update(meetingRoomDecisions)
+        .set({
+          ...req.body,
+          rationale: req.body.rationale === undefined ? undefined : req.body.rationale ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(meetingRoomDecisions.companyId, companyId),
+          eq(meetingRoomDecisions.meetingRoomId, roomId),
+          eq(meetingRoomDecisions.id, decisionId),
+        ))
+        .returning();
+
+      if (!decision) throw notFound("Meeting decision not found");
+      res.json(decision);
+    },
+  );
+
   router.post(
     "/companies/:companyId/meeting-rooms/:roomId/action-items",
     validate(createMeetingRoomActionItemSchema),
@@ -327,6 +385,180 @@ export function meetingRoomRoutes(db: Db) {
         .returning();
 
       res.status(201).json(actionItem);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/meeting-rooms/:roomId/action-items/:actionItemId/create-issue",
+    validate(createIssueFromMeetingActionItemSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const roomId = req.params.roomId as string;
+      const actionItemId = req.params.actionItemId as string;
+      assertCompanyAccess(req, companyId);
+
+      const room = await getRoom(companyId, roomId);
+      if (!room) throw notFound("Meeting room not found");
+
+      const [actionItem] = await db
+        .select()
+        .from(meetingRoomActionItems)
+        .where(and(
+          eq(meetingRoomActionItems.companyId, companyId),
+          eq(meetingRoomActionItems.meetingRoomId, roomId),
+          eq(meetingRoomActionItems.id, actionItemId),
+        ))
+        .limit(1);
+      if (!actionItem) throw notFound("Meeting action item not found");
+      if (actionItem.issueId) {
+        throw unprocessable("Meeting action item already has a linked issue");
+      }
+
+      await assertEntityBelongsToCompany("agent", companyId, req.body.assigneeAgentId);
+      const actor = getActorInfo(req);
+      const description = [
+        req.body.description?.trim() || `Created from meeting action item: ${actionItem.title}`,
+        "",
+        `Meeting: ${room.title}`,
+        room.summary ? `Meeting summary: ${room.summary}` : null,
+      ].filter(Boolean).join("\n");
+
+      const issueInput = {
+        title: req.body.title ?? actionItem.title,
+        description,
+        projectId: room.projectId,
+        assigneeAgentId: req.body.assigneeAgentId ?? actionItem.assigneeAgentId,
+        assigneeUserId: req.body.assigneeUserId ?? actionItem.assigneeUserId,
+        status: req.body.status,
+        priority: req.body.priority,
+        originKind: "meeting_action_item",
+        originId: actionItem.id,
+        originFingerprint: room.id,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+
+      const issue = room.issueId
+        ? (await issuesSvc.createChild(room.issueId, {
+            ...issueInput,
+            blockParentUntilDone: false,
+            actorAgentId: actor.agentId,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          })).issue
+        : await issuesSvc.create(companyId, issueInput);
+
+      const [updatedActionItem] = await db
+        .update(meetingRoomActionItems)
+        .set({ issueId: issue.id, status: "in_progress", updatedAt: new Date() })
+        .where(eq(meetingRoomActionItems.id, actionItem.id))
+        .returning();
+
+      await db
+        .update(meetingRooms)
+        .set({
+          outcome: mergeOutcomeList(room.outcome ?? null, "followUpIssueIds", issue.id),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(meetingRooms.companyId, companyId), eq(meetingRooms.id, roomId)));
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "meeting_room.action_item_issue_created",
+        entityType: "meeting_room",
+        entityId: roomId,
+        details: { actionItemId: actionItem.id, issueId: issue.id, issueIdentifier: issue.identifier },
+      });
+
+      res.status(201).json({ issue, actionItem: updatedActionItem });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/meeting-rooms/:roomId/hiring-requests",
+    validate(requestMeetingHireSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const roomId = req.params.roomId as string;
+      assertCompanyAccess(req, companyId);
+
+      const room = await getRoom(companyId, roomId);
+      if (!room) throw notFound("Meeting room not found");
+
+      const actor = getActorInfo(req);
+      const roleTitle = req.body.title?.trim() || req.body.role;
+      const description = [
+        `Request hire: ${roleTitle}`,
+        "",
+        `Division: ${req.body.division ?? room.division ?? "General"}`,
+        `Reason: ${req.body.reason}`,
+        req.body.skills.length > 0 ? `Skills needed: ${req.body.skills.join(", ")}` : null,
+        "",
+        "This is a Paperclip hiring request. Do not create an agent directly from Zero-Human; review permissions, approve the role, then create or update the agent inside Paperclip.",
+        `Meeting: ${room.title}`,
+      ].filter(Boolean).join("\n");
+
+      const issueInput = {
+        title: `Hiring request: ${roleTitle}`,
+        description,
+        projectId: room.projectId,
+        assigneeAgentId: room.createdByAgentId,
+        status: "todo" as const,
+        priority: req.body.priority,
+        originKind: "meeting_hiring_request",
+        originId: room.id,
+        originFingerprint: `${room.id}:${roleTitle.toLowerCase()}`,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+
+      const issue = room.issueId
+        ? (await issuesSvc.createChild(room.issueId, {
+            ...issueInput,
+            blockParentUntilDone: false,
+            actorAgentId: actor.agentId,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          })).issue
+        : await issuesSvc.create(companyId, issueInput);
+
+      const [actionItem] = await db
+        .insert(meetingRoomActionItems)
+        .values({
+          companyId,
+          meetingRoomId: room.id,
+          issueId: issue.id,
+          assigneeAgentId: room.createdByAgentId,
+          title: `Review hiring request: ${roleTitle}`,
+          status: "todo",
+        })
+        .returning();
+
+      await db
+        .update(meetingRooms)
+        .set({
+          outcome: mergeOutcomeList(
+            mergeOutcomeList(room.outcome ?? null, "followUpIssueIds", issue.id),
+            "hiringRequests",
+            roleTitle,
+          ),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(meetingRooms.companyId, companyId), eq(meetingRooms.id, roomId)));
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "meeting_room.hiring_requested",
+        entityType: "meeting_room",
+        entityId: roomId,
+        details: { role: roleTitle, issueId: issue.id, issueIdentifier: issue.identifier },
+      });
+
+      res.status(201).json({ issue, actionItem });
     },
   );
 

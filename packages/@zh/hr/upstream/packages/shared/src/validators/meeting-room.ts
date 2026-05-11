@@ -6,8 +6,28 @@ export const meetingRoomAttendanceStatusSchema = z.enum(["invited", "joined", "d
 export const meetingRoomMessageAuthorTypeSchema = z.enum(["agent", "user", "system"]);
 export const meetingRoomDecisionStatusSchema = z.enum(["proposed", "accepted", "rejected", "superseded"]);
 export const meetingRoomActionItemStatusSchema = z.enum(["todo", "in_progress", "done", "cancelled"]);
+export const meetingRoomDispositionSchema = z.enum([
+  "no_action",
+  "decision_recorded",
+  "issues_created",
+  "blocked_by_owner",
+  "hiring_requested",
+]);
 
 const optionalUuidSchema = z.string().uuid().optional().nullable();
+
+export const meetingOutcomeSchema = z
+  .object({
+    disposition: meetingRoomDispositionSchema.optional(),
+    decisions: z.array(z.string().trim().min(1).max(500)).optional(),
+    blockers: z.array(z.string().trim().min(1).max(500)).optional(),
+    actionItems: z.array(z.string().trim().min(1).max(500)).optional(),
+    owners: z.array(z.string().trim().min(1).max(120)).optional(),
+    dueDates: z.array(z.string().trim().min(1).max(120)).optional(),
+    followUpIssueIds: z.array(z.string().uuid()).optional(),
+    hiringRequests: z.array(z.string().trim().min(1).max(500)).optional(),
+  })
+  .passthrough();
 
 export const meetingRoomParticipantInputSchema = z.object({
   agentId: optionalUuidSchema,
@@ -39,7 +59,7 @@ export const updateMeetingRoomSchema = z.object({
   agenda: z.array(z.string().trim().min(1).max(500)).max(50).optional(),
   status: meetingRoomStatusSchema.optional(),
   summary: z.string().trim().max(8_000).optional().nullable(),
-  outcome: z.record(z.unknown()).optional().nullable(),
+  outcome: meetingOutcomeSchema.optional().nullable(),
   startedAt: z.coerce.date().optional().nullable(),
   closedAt: z.coerce.date().optional().nullable(),
 });
@@ -70,6 +90,14 @@ export const createMeetingRoomDecisionSchema = z.object({
 
 export type CreateMeetingRoomDecision = z.infer<typeof createMeetingRoomDecisionSchema>;
 
+export const updateMeetingRoomDecisionSchema = z.object({
+  title: z.string().trim().min(1).max(500).optional(),
+  rationale: z.string().trim().max(8_000).optional().nullable(),
+  status: meetingRoomDecisionStatusSchema.optional(),
+});
+
+export type UpdateMeetingRoomDecision = z.infer<typeof updateMeetingRoomDecisionSchema>;
+
 export const createMeetingRoomActionItemSchema = z.object({
   issueId: optionalUuidSchema,
   assigneeAgentId: optionalUuidSchema,
@@ -80,6 +108,28 @@ export const createMeetingRoomActionItemSchema = z.object({
 });
 
 export type CreateMeetingRoomActionItem = z.infer<typeof createMeetingRoomActionItemSchema>;
+
+export const createIssueFromMeetingActionItemSchema = z.object({
+  title: z.string().trim().min(1).max(500).optional(),
+  description: z.string().trim().max(20_000).optional().nullable(),
+  assigneeAgentId: optionalUuidSchema,
+  assigneeUserId: z.string().min(1).max(255).optional().nullable(),
+  priority: z.enum(["low", "medium", "high", "critical"]).optional().default("medium"),
+  status: z.enum(["backlog", "todo", "in_progress"]).optional().default("todo"),
+});
+
+export type CreateIssueFromMeetingActionItem = z.infer<typeof createIssueFromMeetingActionItemSchema>;
+
+export const requestMeetingHireSchema = z.object({
+  role: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(160).optional().nullable(),
+  division: z.string().trim().min(1).max(120).optional().nullable(),
+  reason: z.string().trim().min(1).max(4_000),
+  skills: z.array(z.string().trim().min(1).max(80)).max(40).optional().default([]),
+  priority: z.enum(["low", "medium", "high", "critical"]).optional().default("high"),
+});
+
+export type RequestMeetingHire = z.infer<typeof requestMeetingHireSchema>;
 
 export const createMeetingRoomArtifactReferenceSchema = z.object({
   provider: z.string().trim().min(1).max(120),

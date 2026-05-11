@@ -1,6 +1,12 @@
 import { api } from "./client";
 
 export type MeetingRoomStatus = "draft" | "active" | "summarizing" | "closed" | "archived";
+export type MeetingRoomDisposition =
+  | "no_action"
+  | "decision_recorded"
+  | "issues_created"
+  | "blocked_by_owner"
+  | "hiring_requested";
 
 export interface MeetingRoom {
   id: string;
@@ -125,4 +131,20 @@ export const meetingRoomsApi = {
     api.patch<MeetingRoom>(`/companies/${companyId}/meeting-rooms/${roomId}`, data),
   addMessage: (companyId: string, roomId: string, data: Record<string, unknown>) =>
     api.post<MeetingRoomMessage>(`/companies/${companyId}/meeting-rooms/${roomId}/messages`, data),
+  addDecision: (companyId: string, roomId: string, data: Record<string, unknown>) =>
+    api.post<MeetingRoomDecision>(`/companies/${companyId}/meeting-rooms/${roomId}/decisions`, data),
+  updateDecision: (companyId: string, roomId: string, decisionId: string, data: Record<string, unknown>) =>
+    api.patch<MeetingRoomDecision>(`/companies/${companyId}/meeting-rooms/${roomId}/decisions/${decisionId}`, data),
+  addActionItem: (companyId: string, roomId: string, data: Record<string, unknown>) =>
+    api.post<MeetingRoomActionItem>(`/companies/${companyId}/meeting-rooms/${roomId}/action-items`, data),
+  createIssueFromActionItem: (companyId: string, roomId: string, actionItemId: string, data: Record<string, unknown>) =>
+    api.post<{ issue: unknown; actionItem: MeetingRoomActionItem }>(
+      `/companies/${companyId}/meeting-rooms/${roomId}/action-items/${actionItemId}/create-issue`,
+      data,
+    ),
+  requestHire: (companyId: string, roomId: string, data: Record<string, unknown>) =>
+    api.post<{ issue: unknown; actionItem: MeetingRoomActionItem }>(
+      `/companies/${companyId}/meeting-rooms/${roomId}/hiring-requests`,
+      data,
+    ),
 };

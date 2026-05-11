@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarClock,
   CheckCircle2,
@@ -13,7 +13,12 @@ import {
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
-import { meetingRoomsApi, type MeetingRoom, type MeetingRoomStatus } from "../api/meetingRooms";
+import {
+  meetingRoomsApi,
+  type MeetingRoom,
+  type MeetingRoomDisposition,
+  type MeetingRoomStatus,
+} from "../api/meetingRooms";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
 import { Badge } from "../components/ui/badge";
@@ -32,6 +37,14 @@ const STATUS_OPTIONS: Array<MeetingRoomStatus | "all"> = [
   "summarizing",
   "closed",
   "archived",
+];
+
+const DISPOSITION_OPTIONS: MeetingRoomDisposition[] = [
+  "no_action",
+  "decision_recorded",
+  "issues_created",
+  "blocked_by_owner",
+  "hiring_requested",
 ];
 
 function roomStatusClass(status: string) {
@@ -57,6 +70,13 @@ function issueLabel(issues: Issue[] | undefined, id: string | null) {
 function projectName(projects: Project[] | undefined, id: string | null) {
   if (!id) return null;
   return projects?.find((project) => project.id === id)?.name ?? id.slice(0, 8);
+}
+
+function outcomeDisposition(outcome: Record<string, unknown> | null | undefined): MeetingRoomDisposition | "" {
+  const disposition = outcome?.disposition;
+  return DISPOSITION_OPTIONS.includes(disposition as MeetingRoomDisposition)
+    ? (disposition as MeetingRoomDisposition)
+    : "";
 }
 
 function useMeetingRoomContext(companyId: string | null | undefined) {
@@ -279,7 +299,16 @@ export function MeetingRoomDetail() {
   const { roomId } = useParams<{ roomId: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
   const { agents, projects, issues } = useMeetingRoomContext(selectedCompanyId);
+  const [decisionTitle, setDecisionTitle] = useState("");
+  const [decisionRationale, setDecisionRationale] = useState("");
+  const [actionTitle, setActionTitle] = useState("");
+  const [actionAssigneeId, setActionAssigneeId] = useState("");
+  const [hireRole, setHireRole] = useState("");
+  const [hireReason, setHireReason] = useState("");
+  const [summaryDraft, setSummaryDraft] = useState("");
+  const [dispositionDraft, setDispositionDraft] = useState<MeetingRoomDisposition | "">("");
 
   const { data, isLoading, error } = useQuery({
     queryKey: selectedCompanyId && roomId ? queryKeys.meetingRooms.detail(selectedCompanyId, roomId) : ["meeting-room", "pending"],
@@ -294,6 +323,86 @@ export function MeetingRoomDetail() {
       { label: data?.room.title ?? "Meeting room" },
     ]);
   }, [data?.room.title, setBreadcrumbs]);
+
+  useEffect(() => {
+    if (!data?.room) return;
+    setSummaryDraft(data.room.summary ?? "");
+    setDispositionDraft(outcomeDisposition(data.room.outcome));
+  }, [data?.room.id, data?.room.summary, data?.room.outcome]);
+
+  const invalidateRoom = async () => {
+    if (!selectedCompanyId || !roomId) return;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.meetingRooms.detail(selectedCompanyId, roomId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.meetingRooms.list(selectedCompanyId, {}) }),
+    ]);
+  };
+
+  const addDecisionMutation = useMutation({
+    mutationFn: () =>
+      meetingRoomsApi.addDecision(selectedCompanyId!, roomId!, {
+        title: decisionTitle,
+        rationale: decisionRationale || null,
+        status: "proposed",
+      }),
+    onSuccess: async () => {
+      setDecisionTitle("");
+      setDecisionRationale("");
+      await invalidateRoom();
+    },
+  });
+
+  const acceptDecisionMutation = useMutation({
+    mutationFn: (decisionId: string) =>
+      meetingRoomsApi.updateDecision(selectedCompanyId!, roomId!, decisionId, { status: "accepted" }),
+    onSuccess: invalidateRoom,
+  });
+
+  const addActionItemMutation = useMutation({
+    mutationFn: () =>
+      meetingRoomsApi.addActionItem(selectedCompanyId!, roomId!, {
+        title: actionTitle,
+        assigneeAgentId: actionAssigneeId || null,
+        status: "todo",
+      }),
+    onSuccess: async () => {
+      setActionTitle("");
+      setActionAssigneeId("");
+      await invalidateRoom();
+    },
+  });
+
+  const createIssueMutation = useMutation({
+    mutationFn: (actionItemId: string) =>
+      meetingRoomsApi.createIssueFromActionItem(selectedCompanyId!, roomId!, actionItemId, {}),
+    onSuccess: invalidateRoom,
+  });
+
+  const requestHireMutation = useMutation({
+    mutationFn: () =>
+      meetingRoomsApi.requestHire(selectedCompanyId!, roomId!, {
+        role: hireRole,
+        reason: hireReason,
+      }),
+    onSuccess: async () => {
+      setHireRole("");
+      setHireReason("");
+      await invalidateRoom();
+    },
+  });
+
+  const closeMeetingMutation = useMutation({
+    mutationFn: () =>
+      meetingRoomsApi.update(selectedCompanyId!, roomId!, {
+        status: "closed",
+        summary: summaryDraft || null,
+        outcome: {
+          ...(data?.room.outcome ?? {}),
+          disposition: dispositionDraft,
+        },
+      }),
+    onSuccess: invalidateRoom,
+  });
 
   if (!selectedCompanyId) {
     return <EmptyState icon={MessagesSquare} message="Select a company to view this meeting room." />;
@@ -380,6 +489,50 @@ export function MeetingRoomDetail() {
 
         <div className="space-y-4">
           <Section title="Outcomes" icon={CheckCircle2}>
+            <div className="rounded-md border border-border bg-background p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium">Owner-readable outcome</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Decisions, blockers, actions, and final disposition live here so owners do not need to read the full transcript.
+                  </p>
+                </div>
+                <Badge variant="outline">
+                  {outcomeDisposition(room.outcome) || "no disposition"}
+                </Badge>
+              </div>
+              <textarea
+                value={summaryDraft}
+                onChange={(event) => setSummaryDraft(event.target.value)}
+                placeholder="Meeting summary, decisions, blockers, and next owner-visible notes"
+                className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+              <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
+                <select
+                  value={dispositionDraft}
+                  onChange={(event) => setDispositionDraft(event.target.value as MeetingRoomDisposition | "")}
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="">Select close disposition</option>
+                  {DISPOSITION_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{option.replaceAll("_", " ")}</option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!dispositionDraft || closeMeetingMutation.isPending || room.status === "closed"}
+                  onClick={() => closeMeetingMutation.mutate()}
+                >
+                  Close meeting
+                </Button>
+              </div>
+              {closeMeetingMutation.error ? (
+                <p className="mt-2 text-xs text-destructive">
+                  {closeMeetingMutation.error instanceof Error ? closeMeetingMutation.error.message : "Unable to close meeting."}
+                </p>
+              ) : null}
+            </div>
             {room.summary ? <p className="text-sm leading-6">{room.summary}</p> : null}
             {decisions.length === 0 && actionItems.length === 0 && !room.summary ? (
               <p className="text-sm text-muted-foreground">No decisions or action items recorded yet.</p>
@@ -391,13 +544,45 @@ export function MeetingRoomDetail() {
                   <div key={decision.id} className="rounded-md border border-border p-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium">{decision.title}</span>
-                      <Badge variant="outline">{decision.status}</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{decision.status}</Badge>
+                        {decision.status !== "accepted" ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => acceptDecisionMutation.mutate(decision.id)}
+                            disabled={acceptDecisionMutation.isPending}
+                          >
+                            Mark accepted
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                     {decision.rationale ? <p className="mt-1 text-xs text-muted-foreground">{decision.rationale}</p> : null}
                   </div>
                 ))}
               </div>
             ) : null}
+            <form
+              className="space-y-2 rounded-md border border-border bg-background p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (decisionTitle.trim()) addDecisionMutation.mutate();
+              }}
+            >
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Record decision</h3>
+              <Input value={decisionTitle} onChange={(event) => setDecisionTitle(event.target.value)} placeholder="Decision title" />
+              <textarea
+                value={decisionRationale}
+                onChange={(event) => setDecisionRationale(event.target.value)}
+                placeholder="Rationale"
+                className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+              <Button type="submit" size="sm" disabled={!decisionTitle.trim() || addDecisionMutation.isPending}>
+                Add decision
+              </Button>
+            </form>
             {actionItems.length > 0 ? (
               <div className="space-y-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action items</h3>
@@ -405,7 +590,22 @@ export function MeetingRoomDetail() {
                   <div key={item.id} className="rounded-md border border-border p-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium">{item.title}</span>
-                      <Badge variant="outline">{item.status}</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{item.status}</Badge>
+                        {item.issueId ? (
+                          <Badge variant="outline">issue linked</Badge>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => createIssueMutation.mutate(item.id)}
+                            disabled={createIssueMutation.isPending}
+                          >
+                            Create child issue
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {nameForAgent(agents, item.assigneeAgentId) ?? "Unassigned"}
@@ -415,6 +615,48 @@ export function MeetingRoomDetail() {
                 ))}
               </div>
             ) : null}
+            <form
+              className="space-y-2 rounded-md border border-border bg-background p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (actionTitle.trim()) addActionItemMutation.mutate();
+              }}
+            >
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add action item</h3>
+              <Input value={actionTitle} onChange={(event) => setActionTitle(event.target.value)} placeholder="Action item title" />
+              <select
+                value={actionAssigneeId}
+                onChange={(event) => setActionAssigneeId(event.target.value)}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="">Unassigned</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.name}</option>
+                ))}
+              </select>
+              <Button type="submit" size="sm" disabled={!actionTitle.trim() || addActionItemMutation.isPending}>
+                Add action item
+              </Button>
+            </form>
+            <form
+              className="space-y-2 rounded-md border border-border bg-background p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (hireRole.trim() && hireReason.trim()) requestHireMutation.mutate();
+              }}
+            >
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Request hire</h3>
+              <Input value={hireRole} onChange={(event) => setHireRole(event.target.value)} placeholder="Role needed, e.g. Android Developer" />
+              <textarea
+                value={hireReason}
+                onChange={(event) => setHireReason(event.target.value)}
+                placeholder="Why this role is needed"
+                className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+              <Button type="submit" size="sm" disabled={!hireRole.trim() || !hireReason.trim() || requestHireMutation.isPending}>
+                Request hire through Paperclip
+              </Button>
+            </form>
           </Section>
 
           <Section title="Participants" icon={Users}>
