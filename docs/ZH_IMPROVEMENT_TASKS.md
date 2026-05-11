@@ -31,8 +31,8 @@ Last updated: 2026-05-12
 | TASK-16 | Done | Hermes stores meeting summaries and role learnings as memory/guidance. |
 | TASK-17 | Done | Zero-Human Studio Owner Dashboard now uses SSE realtime state, live/stale indicators, company activity timeline, and low-frequency fallback polling. |
 | TASK-18 | Done | Execution Monitor streams Paperclip/Codex runs with filters, transcript, root error, owner action, artifacts, changed files, and diff summary. |
-| TASK-19 | Planned | Org hierarchy and Paperclip sync semantics are canonical and idempotent. |
-| TASK-20 | Planned | Skills and MCP tools are assigned automatically to hired agents. |
+| TASK-19 | Done | Paperclip bridge now applies canonical reporting, detects duplicate roles, and keeps hiring authority in Paperclip. |
+| TASK-20 | Done | Role skills, imported registry skills, and mandatory Sequential Thinking MCP are auto-selected for Paperclip agents. |
 | TASK-21 | Planned | Meeting, blocker, retry, and token-cost guardrails prevent loops. |
 | TASK-22 | Planned | Zero-Human Studio owner workflows are audited and polished. |
 
@@ -62,8 +62,10 @@ Last verified: 2026-05-12
 | TASK-16 | Brain memory store tests cover meeting summary dedupe and guidance recall; Paperclip server and Brain typechecks validate the Hermes meeting-memory bridge. |
 | TASK-17 | HR server and UI typechecks validate owner dashboard SSE streaming, live/stale badges, company activity events, and reduced polling fallback. |
 | TASK-18 | HR server and UI typechecks validate Workroom/Execution Monitor metadata, SSE streaming, filters, triage guidance, generated artifacts, file changes, and diff visibility. |
+| TASK-19 | HR server typecheck validates canonical Paperclip hierarchy patching, duplicate role reporting, and idempotent bridge sync semantics. |
+| TASK-20 | HR server and UI typechecks validate automatic registry skill matching, mandatory Sequential Thinking MCP display, and Paperclip adapter skill/MCP sync. |
 
-Foundational hardening is complete. TASK-18 is complete; the next open implementation phase is TASK-19 through TASK-22.
+Foundational hardening is complete. TASK-20 is complete; the next open implementation phase is TASK-21 through TASK-22.
 
 ---
 
@@ -90,8 +92,8 @@ Execution order:
 | TASK-16 | Hermes Brain | Hermes/Paperclip bridge | P0 | Done |
 | TASK-17 | Owner Dashboard | Zero-Human Studio | P0 | Done |
 | TASK-18 | Execution Monitor | Zero-Human Studio | P1 | Done |
-| TASK-19 | Organization Sync | Zero-Human Studio + Paperclip | P0 | Planned |
-| TASK-20 | Skills/MCP Automation | Zero-Human Studio + Paperclip | P0 | Planned |
+| TASK-19 | Organization Sync | Zero-Human Studio + Paperclip | P0 | Done |
+| TASK-20 | Skills/MCP Automation | Zero-Human Studio + Paperclip | P0 | Done |
 | TASK-21 | Reliability/Cost | Paperclip + Hermes + 9Router | P1 | Planned |
 | TASK-22 | UX Quality | Zero-Human Studio | P1 | Planned |
 

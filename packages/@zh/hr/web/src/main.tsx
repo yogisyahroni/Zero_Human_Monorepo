@@ -236,7 +236,7 @@ type PaperclipHermesBridgeReport = {
     agentId?: string;
     agentName?: string;
     role?: string;
-    action: "protocol_synced" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
+    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "hierarchy_patched" | "duplicate_detected" | "memory_written" | "skipped";
     reason: string;
   }>;
   error?: string;
@@ -2452,7 +2452,13 @@ function App() {
             </div>
             <div className="roleToolGrid">
               {state.agents.map((agent) => {
-                const tools = state.mcpServers.filter((server) => server.status === "enabled" && server.roles.includes(agent.role));
+                const tools = Array.from(
+                  new Map(
+                    state.mcpServers
+                      .filter((server) => (server.id === "sequential-thinking" && server.status !== "disabled") || (server.status === "enabled" && server.roles.includes(agent.role)))
+                      .map((server) => [server.id, server])
+                  ).values()
+                );
                 return (
                   <article className="roleToolCard" key={agent.id}>
                     <div>

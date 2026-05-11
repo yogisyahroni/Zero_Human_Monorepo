@@ -225,6 +225,7 @@ type PaperclipCodexMcpServer = {
   env?: Record<string, string>;
   permissionMode: McpPermissionMode;
 };
+type CanonicalPaperclipRole = AgentRole | "ceo";
 type PaperclipSyncStatus = "missing" | "drifted" | "synced";
 type PaperclipAgentSyncRecord = {
   agentId: string;
@@ -288,7 +289,7 @@ type PaperclipHermesBridgeReport = {
     agentId?: string;
     agentName?: string;
     role?: string;
-    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "memory_written" | "skipped";
+    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "hierarchy_patched" | "duplicate_detected" | "memory_written" | "skipped";
     reason: string;
   }>;
   error?: string;
@@ -1021,6 +1022,65 @@ function findZeroHumanAgentForPaperclipAgent(row: { name: string; role: string; 
   return existingRoleAgent ?? (inferredRole ? syntheticZeroHumanAgentForPaperclipAgent(row, inferredRole) : undefined);
 }
 
+function canonicalRoleForPaperclipAgent(row: { name: string; role: string; title?: string | null }): CanonicalPaperclipRole | undefined {
+  const normalizedName = slug(row.name);
+  const normalizedRole = slug(row.role);
+  const normalizedTitle = slug(row.title ?? "");
+  const text = `${normalizedName} ${normalizedRole} ${normalizedTitle}`;
+  if (/\b(ceo|chief_executive_officer|founder|owner)\b/.test(text)) return "ceo";
+  return inferZeroHumanRoleForPaperclipAgent(row);
+}
+
+function canonicalTitleForPaperclipRole(role: CanonicalPaperclipRole): string {
+  if (role === "ceo") return "CEO";
+  const titles: Record<AgentRole, string> = {
+    cto: "Chief Technology Officer",
+    frontend: "Frontend Engineer",
+    backend: "Backend Engineer",
+    qa: "Quality Engineer",
+    devops: "DevOps Engineer",
+    product: "Product Manager",
+    design: "Brand and Product Designer",
+    marketing: "Growth Marketer",
+    sales: "Sales Lead",
+    support: "Customer Success",
+    finance: "Finance Operations",
+    operations: "Operations Lead",
+    research: "Research Analyst",
+    legal: "Legal and Compliance"
+  };
+  return titles[role];
+}
+
+function canonicalManagerRoleForPaperclipRole(role: CanonicalPaperclipRole): CanonicalPaperclipRole | undefined {
+  if (role === "ceo") return undefined;
+  if (["cto", "product", "marketing", "finance", "operations", "research", "legal"].includes(role)) return "ceo";
+  if (["backend", "frontend", "qa", "devops"].includes(role)) return "cto";
+  if (role === "design") return "product";
+  if (role === "sales") return "marketing";
+  if (role === "support") return "operations";
+  return "ceo";
+}
+
+function canonicalNameMatch(row: { name: string; role: string; title?: string | null }, role: CanonicalPaperclipRole): boolean {
+  const expectedTitle = slug(canonicalTitleForPaperclipRole(role));
+  return [row.name, row.role, row.title ?? ""].map(slug).some((value) => value === role || value === expectedTitle);
+}
+
+function canonicalPaperclipDuplicateGroups(rows: PaperclipAgentRow[]): Array<{ role: CanonicalPaperclipRole; canonical: PaperclipAgentRow; duplicates: PaperclipAgentRow[] }> {
+  const grouped = new Map<CanonicalPaperclipRole, PaperclipAgentRow[]>();
+  for (const row of rows) {
+    const role = canonicalRoleForPaperclipAgent(row);
+    if (!role) continue;
+    grouped.set(role, [...(grouped.get(role) ?? []), row]);
+  }
+  return Array.from(grouped.entries()).flatMap(([role, group]) => {
+    if (group.length < 2) return [];
+    const canonical = group.find((row) => canonicalNameMatch(row, role)) ?? group[0];
+    return [{ role, canonical, duplicates: group.filter((row) => row.id !== canonical.id) }];
+  });
+}
+
 function paperclipNativeDesiredSkillsForRole(row: { name: string; role: string }): string[] {
   const normalizedName = slug(row.name);
   const normalizedRole = slug(row.role);
@@ -1078,11 +1138,13 @@ type PaperclipAgentRow = {
   name: string;
   role: string;
   title: string | null;
+  reports_to?: string | null;
   status?: string | null;
   adapter_type: string;
   adapter_config: unknown;
   runtime_config: unknown;
   permissions: unknown;
+  metadata?: unknown;
 };
 
 function paperclipAgentTitle(agent: Agent): string {
@@ -1138,11 +1200,33 @@ function paperclipAgentCapabilities(agent: Agent): string {
 }
 
 function paperclipManagerRoleForAgent(agent: Agent): AgentRole | "ceo" | undefined {
-  if (["frontend", "backend", "qa", "devops"].includes(agent.role)) return "cto";
-  if (agent.role === "design") return "product";
-  if (agent.role === "sales") return "marketing";
-  if (agent.role === "support") return "operations";
-  return "ceo";
+  return canonicalManagerRoleForPaperclipRole(agent.role);
+}
+
+async function resolvePaperclipReportsToRole(
+  client: PoolClient,
+  companyId: string,
+  role: CanonicalPaperclipRole,
+  ceoId?: string,
+  currentAgentId?: string
+): Promise<string | null> {
+  const managerRole = canonicalManagerRoleForPaperclipRole(role);
+  if (!managerRole) return null;
+  if (managerRole === "ceo") return ceoId && ceoId !== currentAgentId ? ceoId : null;
+  const managerTitle = canonicalTitleForPaperclipRole(managerRole);
+  const manager = await client.query<{ id: string }>(
+    `select id::text
+       from agents
+      where company_id = $1
+        and id <> coalesce($4::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+        and (lower(role) = lower($2) or lower(name) = lower($2) or lower(title) = lower($3))
+      order by
+        case when lower(name) = lower($2) or lower(role) = lower($2) then 0 else 1 end,
+        created_at asc
+      limit 1`,
+    [companyId, managerRole, managerTitle, currentAgentId ?? null]
+  );
+  return manager.rows[0]?.id ?? ceoId ?? null;
 }
 
 async function resolvePaperclipReportsTo(
@@ -1153,17 +1237,7 @@ async function resolvePaperclipReportsTo(
 ): Promise<string | null> {
   const managerRole = paperclipManagerRoleForAgent(agent);
   if (!managerRole) return null;
-  if (managerRole === "ceo") return ceoId ?? null;
-  const manager = await client.query<{ id: string }>(
-    `select id::text
-       from agents
-      where company_id = $1
-        and (lower(role) = lower($2) or lower(name) = lower($2))
-      order by created_at asc
-      limit 1`,
-    [companyId, managerRole]
-  );
-  return manager.rows[0]?.id ?? ceoId ?? null;
+  return resolvePaperclipReportsToRole(client, companyId, agent.role, ceoId);
 }
 
 async function desiredPaperclipSkillKeysForAgent(client: PoolClient, companyId: string, agent: Agent, syncedAt: string): Promise<string[]> {
@@ -1369,11 +1443,21 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       });
     }
 
-    const agentResult = await client.query<{ id: string; name: string; role: string; title: string | null; status: string; adapter_config: unknown; runtime_config: unknown }>(
-      "select id::text, name, role, title, status, adapter_config, runtime_config from agents where company_id = $1 and status <> 'terminated' order by created_at asc",
+    const agentResult = await client.query<PaperclipAgentRow & { status: string }>(
+      "select id::text, name, role, title, reports_to::text, status, adapter_type, adapter_config, runtime_config, permissions, metadata from agents where company_id = $1 and status <> 'terminated' order by created_at asc",
       [companyId]
     );
     report.agentsScanned = agentResult.rows.length;
+    const paperclipCeo = agentResult.rows.find((row) => canonicalRoleForPaperclipAgent(row) === "ceo");
+    for (const group of canonicalPaperclipDuplicateGroups(agentResult.rows)) {
+      report.details.push({
+        agentId: group.canonical.id,
+        agentName: group.canonical.name,
+        role: group.role,
+        action: "duplicate_detected",
+        reason: `Canonical ${group.role} is ${group.canonical.name}; duplicate candidates: ${group.duplicates.map((row) => `${row.name} (${row.id})`).join(", ")}. Zero-Human will not create another ${group.role}; owner should merge, terminate, or mark the exception explicitly in Paperclip.`
+      });
+    }
     for (const row of agentResult.rows) {
       const configValue = paperclipAdapterConfig(row.adapter_config);
       const syncValue = paperclipAdapterConfig(configValue.paperclipSkillSync);
@@ -1394,6 +1478,13 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       const desiredMcpServers = zeroHumanAgent
         ? enabledMcpServersForAgent(zeroHumanAgent)
         : paperclipNativeMcpServersForRole(row);
+      const canonicalRole = zeroHumanAgent?.role ?? canonicalRoleForPaperclipAgent(row);
+      const desiredReportsTo = canonicalRole
+        ? await resolvePaperclipReportsToRole(client, companyId, canonicalRole, paperclipCeo?.id, row.id)
+        : (row.reports_to ?? null);
+      const desiredTitle = canonicalRole ? canonicalTitleForPaperclipRole(canonicalRole) : (row.title ?? "");
+      const hierarchyChanged = Boolean(canonicalRole)
+        && ((row.reports_to ?? null) !== (desiredReportsTo ?? null) || (row.title ?? "") !== desiredTitle);
       const desiredSkills = Array.from(new Set([
         hermesProtocolSkillKey,
         ...nativeSkillKeys,
@@ -1418,7 +1509,8 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       const desiredUnchanged =
         sameStringSet(existingDesired, desiredSkills)
         && sameStringSet(mcpServerIds(existingMcpServers), desiredMcpServers.map((server) => server.id))
-        && JSON.stringify(runtimeValue.heartbeat ?? {}) === JSON.stringify(nextRuntimeConfig.heartbeat);
+        && JSON.stringify(runtimeValue.heartbeat ?? {}) === JSON.stringify(nextRuntimeConfig.heartbeat)
+        && !hierarchyChanged;
       if (desiredUnchanged) {
         report.details.push({
           agentId: row.id,
@@ -1448,10 +1540,19 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         }
       };
       await client.query(
-        "update agents set adapter_config = $3::jsonb, runtime_config = $4::jsonb, updated_at = now() where company_id = $1 and id = $2",
-        [companyId, row.id, JSON.stringify(nextConfig), JSON.stringify(nextRuntimeConfig)]
+        "update agents set adapter_config = $3::jsonb, runtime_config = $4::jsonb, reports_to = $5::uuid, title = coalesce(nullif($6, ''), title), updated_at = now() where company_id = $1 and id = $2",
+        [companyId, row.id, JSON.stringify(nextConfig), JSON.stringify(nextRuntimeConfig), desiredReportsTo, desiredTitle]
       );
       report.agentsPatched += 1;
+      if (hierarchyChanged) {
+        report.details.push({
+          agentId: row.id,
+          agentName: row.name,
+          role: row.role,
+          action: "hierarchy_patched",
+          reason: `Canonical hierarchy applied: ${canonicalRole} reports to ${canonicalManagerRoleForPaperclipRole(canonicalRole!) ?? "no one"}; title set to ${desiredTitle}.`
+        });
+      }
       report.details.push({
         agentId: row.id,
         agentName: row.name,
