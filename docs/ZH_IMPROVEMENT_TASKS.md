@@ -206,6 +206,10 @@ Acceptance criteria:
 
 ### TASK-19 - Org Hierarchy And Paperclip Sync Semantics
 
+Status: Done
+Implemented: 2026-05-12
+Verification: `pnpm --filter @zh/hr typecheck`, `pnpm --filter @zh/hr test`, `pnpm --filter @zh/hr build`, and `git diff --check`.
+
 Problem:
 Zero-Human and Paperclip can drift into confusing structures, such as duplicate CTO roles or peer roles that should report into a division leader.
 
@@ -222,7 +226,17 @@ Acceptance criteria:
 - Missing roles are shown as missing, not auto-created unless Paperclip hiring workflow approves them.
 - Owner can see drift and apply a correction.
 
+Completion notes:
+- Canonical Paperclip roles now resolve by role slug, name, and title.
+- CEO/CTO duplicates are detected and reported in the Hermes bridge report instead of silently creating more agents.
+- Backend, frontend, QA, DevOps, and maintenance-style roles report to CTO by default.
+- Bridge sync applies canonical titles and reporting lines idempotently while keeping Paperclip as the hiring authority.
+
 ### TASK-20 - Automatic Skill And MCP Assignment
+
+Status: Done
+Implemented: 2026-05-12
+Verification: `pnpm --filter @zh/hr typecheck`, `pnpm --filter @zh/hr test`, `pnpm --filter @zh/hr build`, and `git diff --check`.
 
 Problem:
 Skills and MCP tools are not consistently attached to agents after hiring or after new skill imports.
@@ -239,6 +253,12 @@ Acceptance criteria:
 - Every agent gets Sequential Thinking MCP.
 - Paperclip skill list shows the attached Zero-Human-managed skills.
 - Duplicate skills are not attached twice.
+
+Completion notes:
+- Agent desired skills now include role catalog skills, configured role skills, and ranked imported registry skills.
+- Paperclip agent adapter config receives Hermes protocol skills plus Zero-Human-managed skill keys without duplicating existing assignments.
+- Sequential Thinking MCP is mandatory and displayed for every agent in Zero-Human Studio even when it is not role-scoped.
+- Skill imports and MCP changes trigger Paperclip/Hermes auto-sync so newly hired or newly mapped agents get their guidance before runs.
 
 ### TASK-21 - Meeting, Blocker, And Cost Guardrails
 
