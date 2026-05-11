@@ -18,11 +18,11 @@ jobs:
     name: Frontend Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -34,11 +34,11 @@ jobs:
     name: Admin Service Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -50,11 +50,11 @@ jobs:
     name: Auth Service Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -67,11 +67,11 @@ jobs:
     name: Routing Service Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -88,7 +88,7 @@ jobs:
       ZH_ROUTER_COMPAT_API_KEY: ci_dummy_router_key
       ZH_IMAGE_PREFIX: ghcr.io/yogisyahroni/zero_human_monorepo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate local Docker Compose
         run: docker compose -f docker-compose.yml config --quiet
       - name: Validate staging Docker Compose
@@ -104,11 +104,11 @@ jobs:
       - routing-service-test
       - migration-test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -133,7 +133,7 @@ jobs:
       image_prefix: ${{ steps.meta.outputs.image_prefix }}
       image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3
       - name: Image metadata
         id: meta
@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-push-docker-images
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check deployment secrets
         id: deploy_config
         shell: bash
