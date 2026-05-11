@@ -13,7 +13,7 @@ Last updated: 2026-05-11
 | Task | Status | Notes |
 |------|--------|-------|
 | TASK-01 | Done | Runtime secrets are mandatory in local and staging Compose files. |
-| TASK-02 | Done | Shared env validation is wired into router, brain, and HR services. |
+| TASK-02 | Done | Shared env validation is wired into router, brain, and HR services; package-level env READMEs are present. |
 | TASK-03 | Done | Zero-Human uses named volumes instead of mounting the whole host repo. |
 | TASK-04 | Done | Global executor packages are pinned in the Docker build. |
 | TASK-12 | Done | Hermes is documented and configured as internal memory/guidance context. |
@@ -24,6 +24,29 @@ Last updated: 2026-05-11
 | TASK-09 | Done | `docs/ARCHITECTURE.md` documents the current runtime boundary. |
 | TASK-10 | Done | `CHANGELOG.md` and repository metadata were added. |
 | TASK-11 | Done | Root `Makefile` provides unified local entry points. |
+
+---
+
+## Verification Snapshot
+
+Last verified: 2026-05-11
+
+| Task | Verification evidence |
+|------|-----------------------|
+| TASK-01 | `docker-compose.yml` and `deploy/docker-compose.staging.yml` use mandatory Compose secret syntax; `.env.example` and `README.md` document secret setup. |
+| TASK-02 | `packages/@zh/sdk/src/env.ts` exports `requireEnv` and `warnEnv`; `packages/@zh/router`, `packages/@zh/brain`, and `packages/@zh/hr` validate required env at startup; each `packages/@zh/*/README.md` documents env contracts. |
+| TASK-03 | Zero-Human uses scoped named volumes (`zh-state`, `worktree-source`, `registered-repos`) instead of mounting the whole host repository. |
+| TASK-04 | `Dockerfile` pins global executor package versions through build args; `docs/EXECUTOR_VERSIONS.md` documents upgrade checks. |
+| TASK-05 | Cross-platform `scripts/run.mjs` dispatches Windows PowerShell or POSIX shell stack scripts from the same package commands. |
+| TASK-06 | Vitest coverage exists across SDK, router, brain, and HR; staging CI validates install, build, tests, security scan, and Compose config. |
+| TASK-07 | Redis publishing goes through retry/fallback queue helpers and services degrade gracefully when Redis is temporarily unavailable. |
+| TASK-08 | PRD status and upstream references were refreshed; Hermes wording now follows the memory/guidance boundary. |
+| TASK-09 | `docs/ARCHITECTURE.md` documents topology, service roles, exposed ports, volumes, and task flow. |
+| TASK-10 | `CHANGELOG.md` and repository metadata guidance are present. |
+| TASK-11 | Root `Makefile` provides canonical `up`, `down`, `logs`, `build`, and `test` commands. |
+| TASK-12 | Hermes is documented and configured as internal memory/guidance context; execution remains owned by Zero-Human/Paperclip adapters. |
+
+No open implementation task remains in this tracker.
 
 ---
 
