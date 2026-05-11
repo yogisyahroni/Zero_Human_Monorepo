@@ -262,6 +262,30 @@ export {
 } from "./goal.js";
 
 export {
+  meetingRoomStatusSchema,
+  meetingRoomParticipantRoleSchema,
+  meetingRoomAttendanceStatusSchema,
+  meetingRoomMessageAuthorTypeSchema,
+  meetingRoomDecisionStatusSchema,
+  meetingRoomActionItemStatusSchema,
+  meetingRoomParticipantInputSchema,
+  createMeetingRoomSchema,
+  updateMeetingRoomSchema,
+  addMeetingRoomParticipantSchema,
+  addMeetingRoomMessageSchema,
+  createMeetingRoomDecisionSchema,
+  createMeetingRoomActionItemSchema,
+  createMeetingRoomArtifactReferenceSchema,
+  type CreateMeetingRoom,
+  type UpdateMeetingRoom,
+  type AddMeetingRoomParticipant,
+  type AddMeetingRoomMessage,
+  type CreateMeetingRoomDecision,
+  type CreateMeetingRoomActionItem,
+  type CreateMeetingRoomArtifactReference,
+} from "./meeting-room.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
