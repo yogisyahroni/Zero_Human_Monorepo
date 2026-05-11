@@ -242,6 +242,42 @@ type PaperclipHermesBridgeReport = {
   error?: string;
   createdAt: string;
 };
+type PaperclipHermesInterventionTrigger =
+  | "blocked_issue"
+  | "missing_disposition"
+  | "failed_run"
+  | "high_churn"
+  | "stale_in_progress"
+  | "high_cost_run"
+  | "stale_meeting";
+type PaperclipHermesInterventionReport = {
+  id: string;
+  companyId?: string;
+  scanned: number;
+  intervened: number;
+  skippedCooldown: number;
+  wakeupsQueued: number;
+  memoryNotesWritten: number;
+  meetingsScanned: number;
+  meetingsFlagged: number;
+  highCostRuns: number;
+  comboPolicy: { configuredCombos: string[]; defaultCombo: string; note: string };
+  unavailable: boolean;
+  details: Array<{
+    issueId?: string;
+    issueKey?: string;
+    title?: string;
+    meetingId?: string;
+    meetingTitle?: string;
+    trigger: PaperclipHermesInterventionTrigger;
+    action: "commented" | "commented_and_woke_agent" | "cooldown_skipped" | "ignored" | "owner_notified";
+    assignee?: string;
+    metric?: string;
+    reason: string;
+  }>;
+  error?: string;
+  createdAt: string;
+};
 
 type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
 type AgentIssuePolicy = {
@@ -311,7 +347,11 @@ type RealtimeState = {
 
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
-  infrastructure: { redisUrl: string; worktreeBase: string };
+  infrastructure: {
+    redisUrl: string;
+    worktreeBase: string;
+    services?: { router_url?: string; brain_url?: string; hr_url?: string };
+  };
   policies: { approval_required: boolean; approval_threshold_usd: number; auto_merge: boolean };
   agents: Agent[];
   tasks: Task[];
@@ -372,6 +412,7 @@ type State = {
   paperclipRepositorySync: PaperclipRepositorySyncReport;
   paperclipChatSignals: PaperclipChatSignalReport;
   paperclipHermesBridge: PaperclipHermesBridgeReport;
+  paperclipHermesInterventions: PaperclipHermesInterventionReport;
   issuePolicies: AgentIssuePolicy[];
   mcpMarketplace: McpMarketplaceItem[];
   mcpServers: McpServerConfig[];
@@ -396,7 +437,7 @@ type State = {
 
 const fallbackState: State = {
   company: { name: "Zero-Human", description: "Loading console", budget_usd: 0, currency: "USD" },
-  infrastructure: { redisUrl: "", worktreeBase: "" },
+  infrastructure: { redisUrl: "", worktreeBase: "", services: {} },
   policies: { approval_required: true, approval_threshold_usd: 0, auto_merge: false },
   agents: [],
   tasks: [],
@@ -447,6 +488,21 @@ const fallbackState: State = {
     agentsScanned: 0,
     agentsPatched: 0,
     memoryNotesWritten: 0,
+    unavailable: false,
+    details: [],
+    createdAt: ""
+  },
+  paperclipHermesInterventions: {
+    id: "paperclip_hermes_interventions_not_run",
+    scanned: 0,
+    intervened: 0,
+    skippedCooldown: 0,
+    wakeupsQueued: 0,
+    memoryNotesWritten: 0,
+    meetingsScanned: 0,
+    meetingsFlagged: 0,
+    highCostRuns: 0,
+    comboPolicy: { configuredCombos: [], defaultCombo: "", note: "" },
     unavailable: false,
     details: [],
     createdAt: ""
@@ -574,6 +630,7 @@ function App() {
   const [paperclipRepositorySyncError, setPaperclipRepositorySyncError] = useState("");
   const [paperclipChatSignalError, setPaperclipChatSignalError] = useState("");
   const [paperclipHermesBridgeError, setPaperclipHermesBridgeError] = useState("");
+  const [paperclipHermesInterventionError, setPaperclipHermesInterventionError] = useState("");
   const [mcpQuery, setMcpQuery] = useState("");
   const [selectedMcpId, setSelectedMcpId] = useState("");
   const [mcpJsonDraft, setMcpJsonDraft] = useState("");
@@ -802,6 +859,23 @@ function App() {
     workroom.runs.find((run) => run.id === selectedWorkroomRunId) ??
     filteredWorkroomRuns[0] ??
     workroom.runs[0];
+  const serviceUrl = (value: string | undefined, fallback: string) => (value && value.trim() ? value.replace(/\/$/, "") : fallback);
+  const paperclipBaseUrl = serviceUrl(state.infrastructure.services?.hr_url, "http://localhost:3100");
+  const hermesBaseUrl = serviceUrl(state.infrastructure.services?.brain_url, "http://localhost:9119");
+  const routerBaseUrl = serviceUrl(state.infrastructure.services?.router_url, "http://localhost:20128");
+  const blockedTasks = state.tasks.filter((task) => ["blocked", "error"].includes(task.status));
+  const pendingApprovals = state.tasks.filter((task) => ["pending_review", "review", "in_review"].includes(task.status));
+  const activeRuns = workroom.runs.filter((run) => ["running", "queued"].includes(run.status));
+  const failedRuns = workroom.runs.filter((run) => ["failed", "error", "cancelled"].includes(run.status));
+  const highTokenRuns = workroom.runs.filter((run) => (run.tokenEstimate ?? 0) >= 50000);
+  const repoErrors = workRepositories.filter((repo) => repo.status === "error");
+  const guardrailDetails = state.paperclipHermesInterventions.details;
+  const ownerDecisionCount =
+    pendingHiring.length +
+    pendingApprovals.length +
+    state.alerts.length +
+    guardrailDetails.filter((item) => ["missing_disposition", "stale_meeting", "high_cost_run", "blocked_issue"].includes(item.trigger)).length;
+  const recentMemory = state.brainMemory.recentNotes.slice(0, 3);
 
   useEffect(() => {
     if (!workRepositories.some((repo) => repo.id === repositoryId)) {
@@ -1001,6 +1075,18 @@ function App() {
     const body = await response.json();
     if (!response.ok) {
       setPaperclipHermesBridgeError(body.error ?? "Failed to sync Hermes bridge to Paperclip");
+    }
+    await refresh();
+    setBusy(false);
+  }
+
+  async function scanPaperclipHermesInterventions() {
+    setBusy(true);
+    setPaperclipHermesInterventionError("");
+    const response = await fetch("/api/paperclip/hermes/interventions/scan", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setPaperclipHermesInterventionError(body.error ?? "Failed to scan Hermes guardrails");
     }
     await refresh();
     setBusy(false);
@@ -1313,6 +1399,112 @@ function App() {
         )}
 
         <section className="grid">
+          {activeView === "operations" && (
+          <div className="panel ownerCommand">
+            <div className="panelHead">
+              <div>
+                <h2>Owner command</h2>
+                <p>Live company health, decisions, blockers, cost, repositories, and execution links.</p>
+              </div>
+              <div className="deepLinks">
+                <a className="iconText" href={`${paperclipBaseUrl}/dashboard`} target="_blank" rel="noreferrer">Paperclip</a>
+                <a className="iconText" href={`${hermesBaseUrl}/logs`} target="_blank" rel="noreferrer">Hermes</a>
+                <a className="iconText" href={`${routerBaseUrl}/dashboard/usage`} target="_blank" rel="noreferrer">9Router</a>
+              </div>
+            </div>
+            <div className="ownerCommandGrid">
+              <article className="ownerMetric"><span>Running</span><strong>{activeRuns.length}</strong><small>{workroom.activeRuns} live Paperclip runs</small></article>
+              <article className="ownerMetric"><span>Blocked</span><strong>{blockedTasks.length}</strong><small>{failedRuns.length} failed/cancelled recent runs</small></article>
+              <article className="ownerMetric"><span>Owner decisions</span><strong>{ownerDecisionCount}</strong><small>{pendingHiring.length} hires - {pendingApprovals.length} approvals</small></article>
+              <article className="ownerMetric"><span>Cost watch</span><strong>{money(state.routerMetrics.costUsd)}</strong><small>{highTokenRuns.length} high-token runs - {state.routerMetrics.requests} requests</small></article>
+              <article className="ownerMetric"><span>Repositories</span><strong>{workRepositories.filter((repo) => repo.status === "ready").length}</strong><small>{repoErrors.length} repo errors</small></article>
+              <article className="ownerMetric"><span>Memory</span><strong>{state.brainMemory.entries}</strong><small>{recentMemory.length} recent Hermes notes</small></article>
+            </div>
+            <div className="ownerAttentionList">
+              {state.alerts.slice(0, 2).map((alert) => (
+                <article className="ownerAttentionItem" key={alert.id}>
+                  <div>
+                    <strong>{alert.event}</strong>
+                    <p>{alert.message}</p>
+                  </div>
+                  <Status value={alert.severity} />
+                </article>
+              ))}
+              {guardrailDetails.slice(0, 4).map((item, index) => (
+                <article className="ownerAttentionItem" key={`${item.trigger}-${item.issueId ?? item.meetingId ?? index}`}>
+                  <div>
+                    <strong>{item.issueKey ?? item.meetingTitle ?? item.trigger.replaceAll("_", " ")}</strong>
+                    <p>{item.reason}</p>
+                  </div>
+                  <Status value={item.action} />
+                </article>
+              ))}
+              {repoErrors.slice(0, 2).map((repo) => (
+                <article className="ownerAttentionItem" key={repo.id}>
+                  <div>
+                    <strong>{repo.name}</strong>
+                    <p>{repo.error ?? "Repository sync failed."}</p>
+                  </div>
+                  <Status value="error" />
+                </article>
+              ))}
+              {state.alerts.length === 0 && guardrailDetails.length === 0 && repoErrors.length === 0 && (
+                <div className="empty">No owner attention items right now. Watch active runs or dispatch the next task.</div>
+              )}
+            </div>
+          </div>
+          )}
+
+          {activeView === "operations" && (
+          <div className="panel guardrailCenter">
+            <div className="panelHead">
+              <div>
+                <h2>Hermes guardrails</h2>
+                <p>Bounded blocker, meeting, retry, and cost controls for Paperclip.</p>
+              </div>
+              <button onClick={scanPaperclipHermesInterventions} disabled={busy}>
+                <RefreshCw size={15} /> Scan guardrails
+              </button>
+            </div>
+            <div className="syncSummary">
+              <span>{state.paperclipHermesInterventions.scanned} issues scanned</span>
+              <span>{state.paperclipHermesInterventions.intervened} interventions</span>
+              <span>{state.paperclipHermesInterventions.skippedCooldown} cooldown skips</span>
+              <span>{state.paperclipHermesInterventions.meetingsFlagged} meeting flags</span>
+              <span>{state.paperclipHermesInterventions.highCostRuns} cost flags</span>
+            </div>
+            {paperclipHermesInterventionError && <p className="formWarning">{paperclipHermesInterventionError}</p>}
+            <article className="comboPolicy">
+              <strong>9Router combo policy</strong>
+              <p>{state.paperclipHermesInterventions.comboPolicy?.note ?? "Provider/model routing stays inside 9Router."}</p>
+              <div className="changeList">
+                {(state.paperclipHermesInterventions.comboPolicy?.configuredCombos ?? Object.keys(state.combos)).map((combo) => (
+                  <code key={combo}>{combo}</code>
+                ))}
+              </div>
+            </article>
+            <div className="guardrailList">
+              {state.paperclipHermesInterventions.details.length === 0 && (
+                <div className="empty">No guardrail findings yet. Scan to confirm blockers, meetings, and costs.</div>
+              )}
+              {state.paperclipHermesInterventions.details.slice(0, 8).map((item, index) => (
+                <article className="guardrailRow" key={`${item.trigger}-${item.issueId ?? item.meetingId ?? index}`}>
+                  <div>
+                    <strong>{item.issueKey ?? item.meetingTitle ?? item.trigger.replaceAll("_", " ")}</strong>
+                    <p>{item.reason}</p>
+                  </div>
+                  <div className="guardrailMeta">
+                    <span>{item.trigger}</span>
+                    <span>{item.action}</span>
+                    {item.assignee && <span>{item.assignee}</span>}
+                    {item.metric && <span>{item.metric}</span>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+          )}
+
           {activeView === "workroom" && (
           <div className="panel workroomRuns">
             <div className="panelHead">

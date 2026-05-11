@@ -693,6 +693,8 @@ textarea {
 }
 .mcpMarketplace,
 .mcpRoleMap,
+.ownerCommand,
+.guardrailCenter,
 .paperclipSync,
 .paperclipHermesBridge,
 .paperclipSkillSync,
@@ -1051,6 +1053,79 @@ textarea {
   place-items: center;
   color: var(--muted);
 }
+.ownerCommandGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ownerMetric,
+.ownerAttentionItem,
+.guardrailRow,
+.comboPolicy {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 12px;
+}
+.ownerMetric {
+  display: grid;
+  gap: 6px;
+  min-height: 104px;
+}
+.ownerMetric strong {
+  font-size: 28px;
+  line-height: 1;
+}
+.ownerMetric span {
+  font-weight: 700;
+}
+.ownerMetric small,
+.ownerAttentionItem p,
+.guardrailRow p,
+.comboPolicy p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+.deepLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.deepLinks a {
+  color: var(--text);
+  text-decoration: none;
+}
+.ownerAttentionList,
+.guardrailList {
+  display: grid;
+  gap: 10px;
+}
+.ownerAttentionItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.guardrailRow,
+.comboPolicy {
+  display: grid;
+  gap: 8px;
+}
+.guardrailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.guardrailMeta span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .workroomRuns,
 .workroomTerminal,
 .workroomFiles,
@@ -1264,10 +1339,12 @@ textarea {
   .hireForm,
   .taskRow, .repoRow, .comboRow, .hireCard { grid-template-columns: 1fr; }
   .taskActions, .repoActions, .hireActions { justify-content: flex-start; }
-  .mcpMarketplace, .mcpRoleMap, .paperclipSync, .paperclipHermesBridge, .paperclipSkillSync, .issuePolicy { grid-column: auto; }
+  .mcpMarketplace, .mcpRoleMap, .ownerCommand, .guardrailCenter, .paperclipSync, .paperclipHermesBridge, .paperclipSkillSync, .issuePolicy { grid-column: auto; }
   .mcpImportGrid { grid-template-columns: 1fr; }
   .issuePolicyTester { grid-template-columns: 1fr; }
   .mcpSummary, .mcpCardFooter, .mcpActions { align-items: flex-start; justify-content: flex-start; flex-direction: column; }
+  .ownerAttentionItem { grid-template-columns: 1fr; }
+  .deepLinks { justify-content: flex-start; }
   .runMeta,
   .triageBox,
   .workroomFilters,

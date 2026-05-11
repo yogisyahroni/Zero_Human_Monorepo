@@ -24,7 +24,15 @@ import {
 import { upstreamSources } from "@zh/sdk";
 
 requireEnv(["PORT", "REDIS_URL", "ZH_ROUTER_URL", "ZH_BRAIN_URL", "ZH_HR_URL", "PAPERCLIP_DATABASE_URL"]);
-warnEnv(["DOCKER_HOST", "PAPERCLIP_HERMES_SYNC_INTERVAL_MS", "PAPERCLIP_HERMES_MONITOR_INTERVAL_MS"]);
+warnEnv([
+  "DOCKER_HOST",
+  "PAPERCLIP_HERMES_SYNC_INTERVAL_MS",
+  "PAPERCLIP_HERMES_MONITOR_INTERVAL_MS",
+  "PAPERCLIP_HERMES_HIGH_COST_TOKEN_THRESHOLD",
+  "PAPERCLIP_HERMES_HIGH_COST_DURATION_SEC",
+  "PAPERCLIP_MEETING_MAX_MESSAGES",
+  "PAPERCLIP_MEETING_MAX_AGE_HOURS"
+]);
 
 const config = loadConfig();
 const app = express();
@@ -295,7 +303,14 @@ type PaperclipHermesBridgeReport = {
   error?: string;
   createdAt: string;
 };
-type PaperclipHermesInterventionTrigger = "blocked_issue" | "missing_disposition" | "failed_run" | "high_churn" | "stale_in_progress";
+type PaperclipHermesInterventionTrigger =
+  | "blocked_issue"
+  | "missing_disposition"
+  | "failed_run"
+  | "high_churn"
+  | "stale_in_progress"
+  | "high_cost_run"
+  | "stale_meeting";
 type PaperclipHermesInterventionReport = {
   id: string;
   companyId?: string;
@@ -304,14 +319,21 @@ type PaperclipHermesInterventionReport = {
   skippedCooldown: number;
   wakeupsQueued: number;
   memoryNotesWritten: number;
+  meetingsScanned: number;
+  meetingsFlagged: number;
+  highCostRuns: number;
+  comboPolicy: { configuredCombos: string[]; defaultCombo: string; note: string };
   unavailable: boolean;
   details: Array<{
-    issueId: string;
-    issueKey: string;
-    title: string;
+    issueId?: string;
+    issueKey?: string;
+    title?: string;
+    meetingId?: string;
+    meetingTitle?: string;
     trigger: PaperclipHermesInterventionTrigger;
-    action: "commented" | "commented_and_woke_agent" | "cooldown_skipped" | "ignored";
+    action: "commented" | "commented_and_woke_agent" | "cooldown_skipped" | "ignored" | "owner_notified";
     assignee?: string;
+    metric?: string;
     reason: string;
   }>;
   error?: string;
@@ -1298,9 +1320,12 @@ async function ensurePaperclipAgentForZeroHumanAgent(
   const baseConfig = paperclipAdapterConfig(ceo?.adapter_config);
   const desiredSkills = await desiredPaperclipSkillKeysForAgent(client, companyId, agent, syncedAt);
   const desiredMcpServers = enabledMcpServersForAgent(agent);
+  const inheritedModelCombo = typeof baseConfig.model === "string" && baseConfig.model.trim()
+    ? baseConfig.model
+    : agent.modelCombo || roleModelCombo(agent.role);
   const adapterConfig: Record<string, unknown> = {
     ...baseConfig,
-    model: typeof baseConfig.model === "string" && baseConfig.model.trim() ? baseConfig.model : "combotest",
+    model: inheritedModelCombo,
     paperclipSkillSync: {
       ...paperclipAdapterConfig(baseConfig.paperclipSkillSync),
       desiredSkills
@@ -1957,7 +1982,19 @@ function savePaperclipHermesInterventionState(lastIntervenedAt: Record<string, s
   );
 }
 
+function positiveNumberEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const paperclipHermesHighCostTokenThreshold = positiveNumberEnv("PAPERCLIP_HERMES_HIGH_COST_TOKEN_THRESHOLD", 120000);
+const paperclipHermesHighCostDurationSec = positiveNumberEnv("PAPERCLIP_HERMES_HIGH_COST_DURATION_SEC", 900);
+const paperclipMeetingMaxMessages = positiveNumberEnv("PAPERCLIP_MEETING_MAX_MESSAGES", 60);
+const paperclipMeetingMaxAgeHours = positiveNumberEnv("PAPERCLIP_MEETING_MAX_AGE_HOURS", 24);
+
 function hermesInterventionCooldownMs(trigger: PaperclipHermesInterventionTrigger): number {
+  if (trigger === "high_cost_run") return 60 * 60 * 1000;
+  if (trigger === "stale_meeting") return 2 * 60 * 60 * 1000;
   if (trigger === "high_churn") return 45 * 60 * 1000;
   if (trigger === "stale_in_progress") return 30 * 60 * 1000;
   return 20 * 60 * 1000;
@@ -1975,6 +2012,10 @@ function publicPaperclipHermesInterventionReport(): PaperclipHermesInterventionR
     skippedCooldown: 0,
     wakeupsQueued: 0,
     memoryNotesWritten: 0,
+    meetingsScanned: 0,
+    meetingsFlagged: 0,
+    highCostRuns: 0,
+    comboPolicy: routerComboPolicy(),
     unavailable: !paperclipDatabaseUrl,
     details: [],
     error: paperclipDatabaseUrl ? undefined : "PAPERCLIP_DATABASE_URL is not configured.",
@@ -1996,11 +2037,17 @@ function choosePaperclipHermesTrigger(row: {
   failed_runs_hour: number;
   agent_comments_hour: number;
   missing_disposition: boolean;
+  run_token_estimate?: number | null;
+  duration_sec?: number | null;
   updated_at: string;
 }): PaperclipHermesInterventionTrigger | null {
   if (row.missing_disposition) return "missing_disposition";
   if (row.status === "blocked") return "blocked_issue";
   if (["failed", "error"].includes(row.run_status ?? "") || row.run_error || row.error_code) return "failed_run";
+  if (
+    (row.run_token_estimate ?? 0) >= paperclipHermesHighCostTokenThreshold ||
+    ((row.duration_sec ?? 0) >= paperclipHermesHighCostDurationSec && row.agent_comments_hour >= 4)
+  ) return "high_cost_run";
   if (row.failed_runs_hour >= 3 || row.agent_comments_hour >= 8) return "high_churn";
   const updatedAt = new Date(row.updated_at).getTime();
   if (row.status === "in_progress" && Number.isFinite(updatedAt) && Date.now() - updatedAt > 10 * 60 * 1000) return "stale_in_progress";
@@ -2016,14 +2063,20 @@ function paperclipHermesGuidance(input: {
   runStatus?: string | null;
   livenessReason?: string | null;
   nextAction?: string | null;
+  tokenEstimate?: number | null;
+  durationSec?: number | null;
 }): string {
   const reasonLine = input.livenessReason || input.nextAction || input.runStatus || input.status;
+  const tokenLine = input.tokenEstimate ? `Estimated run tokens: ${input.tokenEstimate.toLocaleString()}` : "";
+  const durationLine = input.durationSec ? `Run duration: ${input.durationSec}s` : "";
   const triggerGuidance: Record<PaperclipHermesInterventionTrigger, string> = {
     blocked_issue: "Blocked is an escalation state, not a stopping state. Diagnose the blocker, then fix it, delegate it, hire/request the missing role, or ask the owner one concrete decision.",
     missing_disposition: "The run finished without a valid disposition. Add a concrete disposition now: done, in_review, delegated, blocked with unblocker, or cancelled.",
     failed_run: "Do not retry the same broad prompt. Read the failing run evidence, narrow the next command, and either repair the config/code or delegate to the role that can.",
     high_churn: "This issue is showing churn. Stop broad exploration, summarize known facts, pick the smallest next action, and create a child issue if another role is needed.",
-    stale_in_progress: "The issue has been in progress without fresh movement. Reconfirm the current workspace and next action, then produce an artifact, delegation, or explicit blocker."
+    stale_in_progress: "The issue has been in progress without fresh movement. Reconfirm the current workspace and next action, then produce an artifact, delegation, or explicit blocker.",
+    high_cost_run: "High-cost run detected. Preserve the configured 9Router combo; do not switch providers or models in app code. Stop broad scans, summarize the cost driver, split the task, and ask owner approval before more spend.",
+    stale_meeting: "Meeting exceeded guardrails. Close it with decisions, action items, owners, and dispositions, or create concrete child issues before continuing."
   };
   return [
     "ZH_HERMES_INTERVENTION",
@@ -2032,6 +2085,8 @@ function paperclipHermesGuidance(input: {
     `Trigger: ${input.trigger}`,
     `Assignee: ${input.assignee ?? "unassigned"}`,
     `Observed: ${reasonLine}`,
+    ...(tokenLine ? [tokenLine] : []),
+    ...(durationLine ? [durationLine] : []),
     "",
     triggerGuidance[input.trigger],
     "",
@@ -2047,6 +2102,130 @@ function paperclipHermesGuidance(input: {
   ].join("\n");
 }
 
+async function paperclipTableExists(client: PoolClient, table: string): Promise<boolean> {
+  const result = await client.query<{ exists: boolean }>(
+    "select exists (select 1 from information_schema.tables where table_schema = 'public' and table_name = $1) as exists",
+    [table]
+  );
+  return result.rows[0]?.exists ?? false;
+}
+
+async function paperclipTableColumns(client: PoolClient, table: string): Promise<Set<string>> {
+  const result = await client.query<{ column_name: string }>(
+    "select column_name from information_schema.columns where table_schema = 'public' and table_name = $1",
+    [table]
+  );
+  return new Set(result.rows.map((row) => row.column_name));
+}
+
+async function scanPaperclipMeetingGuardrails(
+  client: PoolClient,
+  companyId: string,
+  report: PaperclipHermesInterventionReport,
+  state: Record<string, string>
+): Promise<void> {
+  try {
+    if (!(await paperclipTableExists(client, "meeting_rooms"))) {
+      report.details.push({
+        trigger: "stale_meeting",
+        action: "ignored",
+        reason: "Paperclip meeting_rooms table is unavailable; meeting guardrail skipped."
+      });
+      return;
+    }
+    const roomColumns = await paperclipTableColumns(client, "meeting_rooms");
+    if (!roomColumns.has("id") || !roomColumns.has("company_id")) {
+      report.details.push({
+        trigger: "stale_meeting",
+        action: "ignored",
+        reason: "Paperclip meeting_rooms table does not expose id/company_id; meeting guardrail skipped."
+      });
+      return;
+    }
+    const messagesTableExists = await paperclipTableExists(client, "meeting_messages");
+    const messageColumns = messagesTableExists ? await paperclipTableColumns(client, "meeting_messages") : new Set<string>();
+    const canCountMessages = messagesTableExists && messageColumns.has("room_id");
+    const titleExpr = roomColumns.has("title") ? "coalesce(r.title, 'Meeting room')" : "'Meeting room'";
+    const statusExpr = roomColumns.has("status") ? "coalesce(r.status, 'open')" : "'open'";
+    const updatedExpr = roomColumns.has("updated_at") ? "r.updated_at" : "now()";
+    const messageExpr = canCountMessages
+      ? "(select count(*)::int from meeting_messages m where m.room_id = r.id)"
+      : "0";
+    const rooms = await client.query<{
+      meeting_id: string;
+      title: string;
+      status: string;
+      updated_at: string;
+      message_count: number;
+    }>(
+      `with rooms as (
+         select r.id::text as meeting_id,
+                ${titleExpr} as title,
+                ${statusExpr} as status,
+                ${updatedExpr}::timestamptz as updated_at,
+                ${messageExpr} as message_count
+           from meeting_rooms r
+          where r.company_id = $1
+       )
+       select *
+         from rooms
+        where lower(status) not in ('closed', 'done', 'cancelled', 'archived')
+          and (message_count >= $2 or updated_at < now() - ($3::text || ' hours')::interval)
+        order by updated_at asc
+        limit 10`,
+      [companyId, paperclipMeetingMaxMessages, paperclipMeetingMaxAgeHours]
+    );
+    report.meetingsScanned = rooms.rows.length;
+    report.meetingsFlagged = rooms.rows.length;
+    for (const room of rooms.rows) {
+      const stateKey = `meeting:${room.meeting_id}:stale_meeting`;
+      const last = state[stateKey] ? new Date(state[stateKey]).getTime() : 0;
+      if (last && Date.now() - last < hermesInterventionCooldownMs("stale_meeting")) {
+        report.skippedCooldown += 1;
+        report.details.push({
+          meetingId: room.meeting_id,
+          meetingTitle: room.title,
+          trigger: "stale_meeting",
+          action: "cooldown_skipped",
+          metric: `${room.message_count} messages`,
+          reason: "Hermes already flagged this meeting recently."
+        });
+        continue;
+      }
+      state[stateKey] = report.createdAt;
+      report.intervened += 1;
+      report.details.push({
+        meetingId: room.meeting_id,
+        meetingTitle: room.title,
+        trigger: "stale_meeting",
+        action: "owner_notified",
+        metric: `${room.message_count} messages`,
+        reason: `Meeting guardrail tripped. Close the room with decisions/action items or split follow-up issues before more discussion.`
+      });
+      await addBudgetAlert(
+        ZHEvent.COST_THRESHOLD,
+        "global",
+        `Meeting needs disposition: ${room.title}`,
+        "warning",
+        {
+          meetingId: room.meeting_id,
+          status: room.status,
+          messageCount: room.message_count,
+          maxMessages: paperclipMeetingMaxMessages,
+          maxAgeHours: paperclipMeetingMaxAgeHours,
+          reportId: report.id
+        }
+      );
+    }
+  } catch (error) {
+    report.details.push({
+      trigger: "stale_meeting",
+      action: "ignored",
+      reason: `Meeting guardrail skipped: ${(error as Error).message}`
+    });
+  }
+}
+
 async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterventionReport> {
   const report: PaperclipHermesInterventionReport = {
     id: `paperclip_hermes_live_${nanoid(8)}`,
@@ -2055,6 +2234,10 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
     skippedCooldown: 0,
     wakeupsQueued: 0,
     memoryNotesWritten: 0,
+    meetingsScanned: 0,
+    meetingsFlagged: 0,
+    highCostRuns: 0,
+    comboPolicy: routerComboPolicy(),
     unavailable: false,
     details: [],
     createdAt: new Date().toISOString()
@@ -2086,6 +2269,9 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
       liveness_state: string | null;
       liveness_reason: string | null;
       next_action: string | null;
+      stdout_excerpt: string | null;
+      stderr_excerpt: string | null;
+      duration_sec: number | null;
       failed_runs_hour: number;
       agent_comments_hour: number;
       missing_disposition: boolean;
@@ -2107,6 +2293,12 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
                 hr.liveness_state,
                 hr.liveness_reason,
                 hr.next_action,
+                hr.stdout_excerpt,
+                hr.stderr_excerpt,
+                case
+                  when hr.started_at is not null then extract(epoch from (coalesce(hr.finished_at, now()) - hr.started_at))::int
+                  else null
+                end as duration_sec,
                 (select count(*)::int
                    from heartbeat_runs r
                   where r.company_id = i.company_id
@@ -2153,18 +2345,23 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
            or error_code is not null
            or failed_runs_hour >= 3
            or agent_comments_hour >= 8
+           or (duration_sec is not null and duration_sec >= $2)
            or (status = 'in_progress' and updated_at::timestamptz < now() - interval '10 minutes')
         order by
           case priority when 'critical' then 0 when 'high' then 1 when 'medium' then 2 else 3 end,
           updated_at::timestamptz desc
         limit 25`,
-      [companyId]
+      [companyId, paperclipHermesHighCostDurationSec]
     );
     report.scanned = candidates.rows.length;
     let interventionsThisScan = 0;
     for (const row of candidates.rows) {
-      const trigger = choosePaperclipHermesTrigger(row);
+      const runTokenEstimate = tokenEstimateFromText([row.stdout_excerpt ?? "", row.stderr_excerpt ?? ""]);
+      const trigger = choosePaperclipHermesTrigger({ ...row, run_token_estimate: runTokenEstimate });
       if (!trigger) continue;
+      const costMetric = runTokenEstimate > 0
+        ? `${runTokenEstimate.toLocaleString()} estimated tokens`
+        : `${row.duration_sec ?? 0}s runtime`;
       if (isPaperclipRecoveryIssueTitle(row.title)) {
         report.details.push({
           issueId: row.issue_id,
@@ -2214,7 +2411,9 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
         assignee: row.assignee_name,
         runStatus: row.run_status,
         livenessReason: row.liveness_reason,
-        nextAction: row.next_action
+        nextAction: row.next_action,
+        tokenEstimate: runTokenEstimate,
+        durationSec: row.duration_sec
       });
       const metadata = {
         source: "zero-human-hermes-live-brain",
@@ -2253,6 +2452,23 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
         wokeAgent = (wake.rowCount ?? 0) > 0;
         if (wokeAgent) report.wakeupsQueued += 1;
       }
+      if (trigger === "high_cost_run") {
+        report.highCostRuns += 1;
+        await addBudgetAlert(
+          ZHEvent.COST_THRESHOLD,
+          "global",
+          `High-cost Paperclip run on ${row.issue_key}: ${costMetric}`,
+          "warning",
+          {
+            issueKey: row.issue_key,
+            trigger,
+            tokenEstimate: runTokenEstimate,
+            durationSec: row.duration_sec,
+            threshold: paperclipHermesHighCostTokenThreshold,
+            reportId: report.id
+          }
+        );
+      }
       state[stateKey] = report.createdAt;
       report.intervened += 1;
       interventionsThisScan += 1;
@@ -2266,9 +2482,13 @@ async function scanPaperclipHermesInterventions(): Promise<PaperclipHermesInterv
         trigger,
         action: wokeAgent ? "commented_and_woke_agent" : "commented",
         assignee: row.assignee_name ?? undefined,
-        reason: `Inserted Hermes guidance${wokeAgent ? " and queued assignee wakeup" : ""}.`
+        metric: trigger === "high_cost_run" ? costMetric : undefined,
+        reason: trigger === "high_cost_run"
+          ? `High-cost guardrail tripped (${costMetric}). Hermes requested a smaller next action and preserved 9Router combo routing.`
+          : `Inserted Hermes guidance${wokeAgent ? " and queued assignee wakeup" : ""}.`
       });
     }
+    await scanPaperclipMeetingGuardrails(client, companyId, report, state);
     savePaperclipHermesInterventionState(state);
     latestPaperclipHermesInterventionReport = report;
     return report;
@@ -3502,8 +3722,28 @@ function importSkillsFromRepository(repository: RegisteredRepository, subPath = 
   return report;
 }
 
+function configuredComboNames(): string[] {
+  return Object.keys(config.gateway.combos ?? {}).filter(Boolean);
+}
+
+function chooseConfiguredCombo(preferred: string, fallback: string): string {
+  const combos = config.gateway.combos ?? {};
+  if (Array.isArray(combos[preferred]) && combos[preferred].length) return preferred;
+  if (Array.isArray(combos[fallback]) && combos[fallback].length) return fallback;
+  return configuredComboNames()[0] ?? preferred;
+}
+
 function roleModelCombo(role: AgentRole): string {
-  return ["cto", "backend", "frontend", "qa", "devops", "product", "design"].includes(role) ? "cheap_stack" : "free_stack";
+  const technical = ["cto", "backend", "frontend", "qa", "devops", "product", "design"].includes(role);
+  return chooseConfiguredCombo(technical ? "cheap_stack" : "free_stack", technical ? "free_stack" : "cheap_stack");
+}
+
+function routerComboPolicy(): { configuredCombos: string[]; defaultCombo: string; note: string } {
+  return {
+    configuredCombos: configuredComboNames(),
+    defaultCombo: chooseConfiguredCombo("free_stack", "cheap_stack"),
+    note: "Zero-Human requests 9Router combo names only; provider and model routing stays configured in 9Router."
+  };
 }
 
 function roleExecutor(role: AgentRole): Agent["executor"] {
@@ -4617,7 +4857,7 @@ app.post("/api/paperclip/hermes/interventions/scan", async (_req, res) => {
     "paperclip_hermes_live_brain",
     report.unavailable
       ? `Hermes live brain unavailable: ${report.error}`
-      : `Hermes live brain scanned ${report.scanned} Paperclip issues and intervened on ${report.intervened}.`
+      : `Hermes live brain scanned ${report.scanned} Paperclip issues, flagged ${report.meetingsFlagged} meetings, and intervened on ${report.intervened}.`
   );
   res.status(report.unavailable ? 503 : 200).json(report);
 });

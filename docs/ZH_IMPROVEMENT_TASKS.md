@@ -33,8 +33,8 @@ Last updated: 2026-05-12
 | TASK-18 | Done | Execution Monitor streams Paperclip/Codex runs with filters, transcript, root error, owner action, artifacts, changed files, and diff summary. |
 | TASK-19 | Done | Paperclip bridge now applies canonical reporting, detects duplicate roles, and keeps hiring authority in Paperclip. |
 | TASK-20 | Done | Role skills, imported registry skills, and mandatory Sequential Thinking MCP are auto-selected for Paperclip agents. |
-| TASK-21 | Planned | Meeting, blocker, retry, and token-cost guardrails prevent loops. |
-| TASK-22 | Planned | Zero-Human Studio owner workflows are audited and polished. |
+| TASK-21 | Done | Hermes guardrails now bound meeting/blocker/retry loops, detect high-cost runs, notify the owner, and preserve configurable 9Router combo routing. |
+| TASK-22 | Done | Zero-Human Studio Owner Command now shows running work, blockers, decisions, repositories, cost, memory, deep links, and guardrail scan state. |
 
 ---
 
@@ -64,8 +64,10 @@ Last verified: 2026-05-12
 | TASK-18 | HR server and UI typechecks validate Workroom/Execution Monitor metadata, SSE streaming, filters, triage guidance, generated artifacts, file changes, and diff visibility. |
 | TASK-19 | HR server typecheck validates canonical Paperclip hierarchy patching, duplicate role reporting, and idempotent bridge sync semantics. |
 | TASK-20 | HR server and UI typechecks validate automatic registry skill matching, mandatory Sequential Thinking MCP display, and Paperclip adapter skill/MCP sync. |
+| TASK-21 | HR server and UI typechecks validate Hermes blocker/meeting/cost guardrails, cooldown state, 9Router combo policy, and owner alerts. |
+| TASK-22 | HR server and UI typechecks validate the Owner Command dashboard, deep links, attention queue, and guardrail control surface. |
 
-Foundational hardening is complete. TASK-20 is complete; the next open implementation phase is TASK-21 through TASK-22.
+Foundational hardening is complete. TASK-21 and TASK-22 are complete; the next open phase is future owner hardening/backlog.
 
 ---
 
@@ -94,8 +96,8 @@ Execution order:
 | TASK-18 | Execution Monitor | Zero-Human Studio | P1 | Done |
 | TASK-19 | Organization Sync | Zero-Human Studio + Paperclip | P0 | Done |
 | TASK-20 | Skills/MCP Automation | Zero-Human Studio + Paperclip | P0 | Done |
-| TASK-21 | Reliability/Cost | Paperclip + Hermes + 9Router | P1 | Planned |
-| TASK-22 | UX Quality | Zero-Human Studio | P1 | Planned |
+| TASK-21 | Reliability/Cost | Paperclip + Hermes + 9Router | P1 | Done |
+| TASK-22 | UX Quality | Zero-Human Studio | P1 | Done |
 
 ### TASK-13 - Meeting Room Domain Model And API
 
@@ -262,6 +264,10 @@ Completion notes:
 
 ### TASK-21 - Meeting, Blocker, And Cost Guardrails
 
+Status: Done
+Implemented: 2026-05-12
+Verification: `pnpm --filter @zh/hr typecheck`, `pnpm --filter @zh/hr test`, `pnpm --filter @zh/hr build`, and `git diff --check`.
+
 Problem:
 The system can burn tokens through repeated planning, repeated blockers, and meetings that do not produce concrete action.
 
@@ -278,7 +284,17 @@ Acceptance criteria:
 - The owner can see token/cost warnings from Zero-Human Studio.
 - `combotest` and other 9Router combos remain configurable in 9Router, not hardcoded in app logic.
 
+Completion notes:
+- Hermes live-brain scans now detect blocked, missing-disposition, failed, high-churn, stale, and high-cost Paperclip runs with cooldowns and a scan cap.
+- Meeting guardrails flag stale or oversized rooms and notify the owner instead of letting discussions continue without disposition.
+- High-cost runs create Zero-Human budget alerts and tell agents to preserve configured 9Router combo routing rather than hardcoding providers/models.
+- New guidance requires explicit Paperclip disposition, git push to staging when code changes, and CI inspection when credentials are available.
+
 ### TASK-22 - Zero-Human Studio Owner Workflow Polish
+
+Status: Done
+Implemented: 2026-05-12
+Verification: `pnpm --filter @zh/hr typecheck`, `pnpm --filter @zh/hr test`, `pnpm --filter @zh/hr build`, and `git diff --check`.
 
 Problem:
 Several Studio surfaces are useful but feel unfinished, stale, or disconnected from the Paperclip/Hermes reality.
@@ -294,6 +310,12 @@ Acceptance criteria:
 - Sidebar pages no longer feel like placeholders.
 - Empty states tell the owner what to do next.
 - Studio becomes the main command dashboard, not only a passive status page.
+
+Completion notes:
+- Operations now has an Owner Command panel that answers what is running, blocked, waiting on decisions, changed in repositories, stored in memory, and spent in 9Router.
+- Studio exposes direct links to Paperclip, Hermes logs, and 9Router usage from the command surface.
+- Hermes Guardrails panel shows issue scans, meeting flags, high-cost flags, cooldowns, combo policy, and the latest intervention reasons.
+- Empty states now point the owner toward dispatching work, scanning guardrails, or reviewing attention items.
 
 ---
 
