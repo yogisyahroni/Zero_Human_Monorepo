@@ -1,32 +1,36 @@
-import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 import { agentsFromConfig, loadConfig } from "@zh/sdk";
 import { evaluateBudgetPolicy } from "./budget-policy.js";
 
-const agents = agentsFromConfig(loadConfig());
-assert.ok(agents.find((agent) => agent.id === "cto"));
+describe("@zh/hr smoke", () => {
+  it("loads the CTO agent", () => {
+    const agents = agentsFromConfig(loadConfig());
+    expect(agents.find((agent) => agent.id === "cto")).toBeTruthy();
+  });
 
-assert.deepEqual(evaluateBudgetPolicy({
-  globalSpent: 5,
-  globalLimit: 100,
-  approvalThreshold: 5,
-  agentSpent: 1,
-  agentLimit: 10
-}), {
-  thresholdCrossed: true,
-  globalExhausted: false,
-  agentExhausted: false
+  it("evaluates budget threshold and exhaustion", () => {
+    expect(evaluateBudgetPolicy({
+      globalSpent: 5,
+      globalLimit: 100,
+      approvalThreshold: 5,
+      agentSpent: 1,
+      agentLimit: 10
+    })).toEqual({
+      thresholdCrossed: true,
+      globalExhausted: false,
+      agentExhausted: false
+    });
+
+    expect(evaluateBudgetPolicy({
+      globalSpent: 100,
+      globalLimit: 100,
+      approvalThreshold: 5,
+      agentSpent: 10,
+      agentLimit: 10
+    })).toEqual({
+      thresholdCrossed: true,
+      globalExhausted: true,
+      agentExhausted: true
+    });
+  });
 });
-
-assert.deepEqual(evaluateBudgetPolicy({
-  globalSpent: 100,
-  globalLimit: 100,
-  approvalThreshold: 5,
-  agentSpent: 10,
-  agentLimit: 10
-}), {
-  thresholdCrossed: true,
-  globalExhausted: true,
-  agentExhausted: true
-});
-
-console.log("@zh/hr smoke test passed");

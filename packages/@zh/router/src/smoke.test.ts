@@ -1,7 +1,10 @@
-import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 import { loadConfig } from "@zh/sdk";
 
-const config = loadConfig();
-assert.ok(config.gateway.port > 0);
-assert.ok(Object.keys(config.gateway.combos).length > 0);
-console.log("@zh/router smoke test passed");
+describe("@zh/router config", () => {
+  it("has a listening port and model combos", () => {
+    const config = loadConfig();
+    expect(config.gateway.port).toBeGreaterThan(0);
+    expect(Object.keys(config.gateway.combos).length).toBeGreaterThan(0);
+  });
+});

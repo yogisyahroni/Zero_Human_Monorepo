@@ -1,5 +1,8 @@
-import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 import { agentsFromConfig, loadConfig } from "@zh/sdk";
 
-assert.ok(agentsFromConfig(loadConfig()).some((agent) => agent.brain === "hermes"));
-console.log("@zh/brain smoke test passed");
+describe("@zh/brain config", () => {
+  it("has at least one Hermes-backed agent", () => {
+    expect(agentsFromConfig(loadConfig()).some((agent) => agent.brain === "hermes")).toBe(true);
+  });
+});

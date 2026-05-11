@@ -12,6 +12,28 @@ This repo now contains both the Zero-Human integration wrappers and the original
 
 ## Run Locally
 
+Create a local `.env` before starting the Docker stack:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Generate and set `BETTER_AUTH_SECRET`:
+
+```powershell
+[System.Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+```
+
+On shells with OpenSSL:
+
+```bash
+openssl rand -hex 32
+```
+
+Set `ZH_ROUTER_COMPAT_API_KEY` to a private internal token used by services when
+they call 9Router. Configure real provider keys in the 9Router UI, or put a
+bootstrap provider key in `.env` for 9Router only.
+
 ```powershell
 pnpm install
 pnpm build
@@ -58,8 +80,11 @@ Open:
 
 - Zero-Human control plane: <http://localhost:3003>
 - 9Router upstream: <http://localhost:20128>
-- Hermes upstream dashboard: <http://localhost:9119>
 - Paperclip upstream: <http://localhost:3100>
+
+Hermes runs inside the Docker network as memory and operating-protocol context.
+It is intentionally not exposed on a host port; Zero-Human and Paperclip reach
+it through internal service URLs.
 
 Set up AI providers from the 9Router UI at <http://localhost:20128>. 9Router is
 the central AI gateway for Hermes, Paperclip, and Zero-Human; other services
@@ -73,6 +98,11 @@ Codex CLI is the default coding executor for real worktree edits. See
 The three upstream projects run as independent Docker services. Zero-Human
 adapter services run alongside them and communicate through Redis plus the
 configured service URLs.
+
+See `docs/ARCHITECTURE.md` for the current service boundary: Zero-Human owns
+policy, Paperclip owns execution, Codex CLI edits repositories, 9Router routes
+AI calls, and Hermes supplies memory/guidance rather than acting as a second
+executor.
 
 ## Development Services
 

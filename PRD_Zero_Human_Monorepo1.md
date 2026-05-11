@@ -3,7 +3,10 @@
 
 **Version:** 1.0  
 **Date:** 7 Mei 2026  
-**Status:** Draft
+**Status:** Implemented baseline, hardening in progress
+
+> Implementation note: current runtime details and security hardening tasks are
+> tracked in `PRD_REMAINING_TASKS.md` and `docs/ZH_IMPROVEMENT_TASKS.md`.
 
 ---
 
@@ -44,7 +47,7 @@ Komponen inti diambil dari 3 repository open-source aktif. Struktur monorepo men
 
 | Package | Upstream Repo | Role | License |
 |---------|---------------|------|---------|
-| `@zh/router` | [NousResearch/9Router](https://github.com/NousResearch/9Router) | Local AI gateway dengan token saver & smart fallback | MIT |
+| `@zh/router` | [decolua/9router](https://github.com/decolua/9router) | Local AI gateway dengan token saver & smart fallback | MIT |
 | `@zh/brain` | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | Persistent memory, skill evolution, subagent spawner | MIT |
 | `@zh/hr` | [paperclip-org/paperclip](https://github.com/paperclip-org/paperclip) | Orchestration dashboard, task queue, git worktree | MIT |
 
@@ -56,7 +59,7 @@ Komponen inti diambil dari 3 repository open-source aktif. Struktur monorepo men
 **Clone Commands (Initial Setup):**
 ```bash
 # Add upstream sebagai remote
-git remote add upstream-router https://github.com/NousResearch/9Router.git
+git remote add upstream-router https://github.com/decolua/9router.git
 git remote add upstream-brain https://github.com/NousResearch/hermes-agent.git
 git remote add upstream-hr https://github.com/paperclip-org/paperclip.git
 
@@ -480,11 +483,11 @@ Berikut adalah repository asli (upstream) yang perlu di-fork atau di-pull via gi
 
 | Package | Upstream Repo | URL | Branch | License |
 |---------|---------------|-----|--------|---------|
-| `@zh/router` | 9Router | `https://github.com/NousResearch/9Router` | `main` | MIT |
+| `@zh/router` | 9Router | `https://github.com/decolua/9router` | `main` | MIT |
 | `@zh/brain` | Hermes Agent | `https://github.com/NousResearch/hermes-agent` | `main` | MIT |
 | `@zh/hr` | Paperclip | `https://github.com/paperclip-org/paperclip` | `main` | MIT |
 
-**Catatan:** URL repo di atas berdasarkan hasil research. Sebelum fork, verifikasi ulang keberadaan repo karena upstream bisa berubah (rename, archive, atau pindah organisasi).
+**Catatan:** PRD awal menyebut `NousResearch/9Router`, tetapi upstream publik yang dipakai repo ini adalah `decolua/9router`. Sebelum sync, tetap verifikasi ulang karena upstream bisa berubah, rename, archive, atau pindah organisasi.
 
 #### Initial Setup (First Time)
 
@@ -494,7 +497,7 @@ git clone https://github.com/you/zero-human.git
 cd zero-human
 
 # 2. Add upstream repos sebagai remote references
-git remote add upstream-router https://github.com/NousResearch/9Router.git
+git remote add upstream-router https://github.com/decolua/9router.git
 git remote add upstream-brain https://github.com/NousResearch/hermes-agent.git
 git remote add upstream-hr https://github.com/paperclip-org/paperclip.git
 
@@ -584,7 +587,7 @@ mkdir -p patches/{router,brain,hr}
 mkdir -p config
 
 # Add upstream remotes if not exists
-git remote get-url upstream-router >/dev/null 2>&1 || git remote add upstream-router https://github.com/NousResearch/9Router.git
+git remote get-url upstream-router >/dev/null 2>&1 || git remote add upstream-router https://github.com/decolua/9router.git
 git remote get-url upstream-brain >/dev/null 2>&1 || git remote add upstream-brain https://github.com/NousResearch/hermes-agent.git
 git remote get-url upstream-hr >/dev/null 2>&1 || git remote add upstream-hr https://github.com/paperclip-org/paperclip.git
 
@@ -664,7 +667,7 @@ jobs:
     strategy:
       matrix:
         upstream:
-          - { name: router, repo: NousResearch/9Router, branch: main }
+          - { name: router, repo: decolua/9router, branch: main }
           - { name: brain, repo: NousResearch/hermes-agent, branch: main }
           - { name: hr, repo: paperclip-org/paperclip, branch: main }
 

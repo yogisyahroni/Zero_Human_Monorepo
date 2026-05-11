@@ -68,10 +68,10 @@ services:
       HERMES_GID: ${HERMES_GID:-10000}
       HERMES_HOME: /opt/data
       OPENAI_BASE_URL: http://9router:20128/v1
-      OPENAI_API_KEY: ${ZH_ROUTER_COMPAT_API_KEY:-sk_9router}
+      OPENAI_API_KEY: "${ZH_ROUTER_COMPAT_API_KEY:?ZH_ROUTER_COMPAT_API_KEY must be set}"
       DOCKER_HOST: tcp://docker-socket-proxy:2375
-    ports:
-      - "9119:9119"
+    expose:
+      - "9119"
     volumes:
       - brain-memory:/opt/data
     depends_on:
@@ -117,12 +117,12 @@ services:
       PAPERCLIP_HOME: /paperclip
       PAPERCLIP_INSTANCE_ID: default
       PAPERCLIP_CONFIG: /paperclip/instances/default/config.json
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-zero-human-dev-secret-change-me}
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set. Generate with: openssl rand -hex 32}"
       ZH_ROUTER_URL: http://9router:20128
       ZH_BRAIN_URL: http://hermes:9119
       ZH_BRAIN_ADAPTER_URL: http://zh-brain-adapter:8080
       OPENAI_BASE_URL: http://9router:20128/v1
-      OPENAI_API_KEY: ${ZH_ROUTER_COMPAT_API_KEY:-sk_9router}
+      OPENAI_API_KEY: "${ZH_ROUTER_COMPAT_API_KEY:?ZH_ROUTER_COMPAT_API_KEY must be set}"
       CODEX_HOME: /paperclip/.codex
       CODEX_OPENAI_BASE_URL: http://9router:20128/v1
       CODEX_MODEL: ${CODEX_MODEL:-combotest}
@@ -187,7 +187,8 @@ services:
       ZH_WORKTREE_BASE: /app/worktrees
       CODEX_HOME: /root/.codex
       CODEX_OPENAI_BASE_URL: http://9router:20128/v1
-      CODEX_API_KEY: ${ZH_ROUTER_COMPAT_API_KEY:-sk_9router}
+      CODEX_API_KEY: "${ZH_ROUTER_COMPAT_API_KEY:?ZH_ROUTER_COMPAT_API_KEY must be set}"
+      ZH_ROUTER_COMPAT_API_KEY: "${ZH_ROUTER_COMPAT_API_KEY:?ZH_ROUTER_COMPAT_API_KEY must be set}"
       CODEX_MODEL: ${CODEX_MODEL:-combotest}
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     volumes:
@@ -221,11 +222,11 @@ services:
       ZH_BRAIN_URL: http://zh-brain-adapter:8080
       ZH_HR_URL: http://paperclip:3100
       PAPERCLIP_DATABASE_URL: postgres://paperclip:paperclip@paperclip-db:5432/paperclip
-      ZH_REPO_PATH: /repo
+      ZH_REPO_PATH: /app/worktree-source
       ZH_WORKTREE_SOURCE_PATH: /app/worktree-source
       ZH_REPOSITORY_BASE: /app/repositories
       ZH_WORKTREE_BASE: /app/worktrees
-      ZH_STATE_PATH: /repo/.zero-human/state
+      ZH_STATE_PATH: /app/.zero-human/state
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     ports:
       - "3003:3003"
@@ -233,7 +234,7 @@ services:
       - hr-worktrees:/app/worktrees
       - worktree-source:/app/worktree-source
       - registered-repos:/app/repositories
-      - .:/repo
+      - zh-state:/app/.zero-human
     depends_on:
       - redis
       - zh-brain-adapter
@@ -258,6 +259,7 @@ volumes:
   hr-worktrees:
   worktree-source:
   registered-repos:
+  zh-state:
 
 networks:
   zh-network:

@@ -8,7 +8,7 @@
     "dev": "concurrently -n api,web \"tsx watch src/server.ts\" \"vite --config web/vite.config.ts --host 0.0.0.0\"",
     "start": "node dist/server.js",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx src/smoke.test.ts",
+    "test": "vitest run --dir src",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

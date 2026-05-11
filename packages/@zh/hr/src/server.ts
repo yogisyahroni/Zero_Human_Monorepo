@@ -12,14 +12,19 @@ import {
   agentsFromConfig,
   loadConfig,
   RedisEventBus,
+  requireEnv,
   type Agent,
   type AgentRole,
   type SkillDefinition,
   type Task,
   type TaskType,
+  warnEnv,
   ZHEvent
 } from "@zh/sdk";
 import { upstreamSources } from "@zh/sdk";
+
+requireEnv(["PORT", "REDIS_URL", "ZH_ROUTER_URL", "ZH_BRAIN_URL", "ZH_HR_URL", "PAPERCLIP_DATABASE_URL"]);
+warnEnv(["DOCKER_HOST", "PAPERCLIP_HERMES_SYNC_INTERVAL_MS", "PAPERCLIP_HERMES_MONITOR_INTERVAL_MS"]);
 
 const config = loadConfig();
 const app = express();

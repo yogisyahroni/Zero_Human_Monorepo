@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "description": "Autonomous AI company operating system monorepo.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yogisyahroni/Zero_Human_Monorepo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yogisyahroni/Zero_Human_Monorepo/issues"
+  },
+  "homepage": "https://github.com/yogisyahroni/Zero_Human_Monorepo#readme",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "build": "pnpm -r build",
@@ -10,10 +18,10 @@
     "dev:router": "pnpm --filter @zh/router dev",
     "dev:brain": "pnpm --filter @zh/brain dev",
     "dev:hr": "pnpm --filter @zh/hr dev",
-    "stack:start": "powershell -ExecutionPolicy Bypass -File scripts/start-zero-human.ps1",
-    "stack:stop": "powershell -ExecutionPolicy Bypass -File scripts/stop-zero-human.ps1",
-    "stack:status": "powershell -ExecutionPolicy Bypass -File scripts/status-zero-human.ps1",
-    "stack:logs": "powershell -ExecutionPolicy Bypass -File scripts/logs-zero-human.ps1",
+    "stack:start": "node scripts/run.mjs start",
+    "stack:stop": "node scripts/run.mjs stop",
+    "stack:status": "node scripts/run.mjs status",
+    "stack:logs": "node scripts/run.mjs logs",
     "skills:generate": "node scripts/generate-skill-registry.mjs && node scripts/generate-skills-sh-registry.mjs",
     "skills:generate:local": "node scripts/generate-skill-registry.mjs",
     "skills:generate:skills-sh": "node scripts/generate-skills-sh-registry.mjs",
@@ -23,11 +31,15 @@
     "router:update:stable": "powershell -ExecutionPolicy Bypass -File scripts/update-router-stable.ps1",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
+    "test:unit": "pnpm -r test",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "@vitest/coverage-v8": "^4.1.5",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.5"
   }
 }

@@ -1,9 +1,15 @@
 import express from "express";
 import cors from "cors";
-import { loadConfig, RedisEventBus, upstreamSources, ZHEvent } from "@zh/sdk";
+import { loadConfig, RedisEventBus, requireEnv, upstreamSources, warnEnv, ZHEvent } from "@zh/sdk";
+
+requireEnv(["PORT", "REDIS_URL", "ZH_ROUTER_URL"]);
+warnEnv(["ZH_CONFIG_PATH"]);
 
 const config = loadConfig();
 const app = express();
+const fallbackAuthorization = process.env.ZH_ROUTER_COMPAT_API_KEY
+  ? `Bearer ${process.env.ZH_ROUTER_COMPAT_API_KEY}`
+  : undefined;
 const usage = {
   requests: 0,
   inputTokens: 0,
@@ -122,7 +128,9 @@ app.post("/v1/chat/completions", async (req, res) => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "authorization": req.header("authorization") ?? "Bearer sk_9router",
+          ...(req.header("authorization") || fallbackAuthorization
+            ? { "authorization": req.header("authorization") ?? fallbackAuthorization }
+            : {}),
           "x-zh-combo": comboName
         },
         body: JSON.stringify({

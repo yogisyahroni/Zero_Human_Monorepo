@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.git
+.zero-human
+node_modules
+dist
+coverage
+worktrees
+*.log
+*.png
+*.tmp

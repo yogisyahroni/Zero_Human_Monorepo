@@ -13,10 +13,9 @@ Hermes, Paperclip, and Zero-Human should not hold provider keys directly. They
 call 9Router through internal service URLs such as `http://9router:20128` or
 the `zh-router-adapter`.
 
-`OPENAI_BASE_URL=http://9router:20128/v1` plus
-`ZH_ROUTER_COMPAT_API_KEY=sk_9router` is only the OpenAI-compatible internal
-contract for services that expect an OpenAI-style API. Real provider keys
-belong to 9Router.
+`OPENAI_BASE_URL=http://9router:20128/v1` plus a private
+`ZH_ROUTER_COMPAT_API_KEY` is only the OpenAI-compatible internal contract for
+services that expect an OpenAI-style API. Real provider keys belong to 9Router.
 
 ## 9Router Updates
 

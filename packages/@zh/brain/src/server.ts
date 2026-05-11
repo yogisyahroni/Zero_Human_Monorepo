@@ -6,8 +6,11 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { agentsFromConfig, loadConfig, RedisEventBus, type Agent, Task, upstreamSources, ZHEvent } from "@zh/sdk";
+import { agentsFromConfig, loadConfig, RedisEventBus, requireEnv, type Agent, Task, upstreamSources, warnEnv, ZHEvent } from "@zh/sdk";
 import { HermesCompatibleMemoryStore } from "./memory-store.js";
+
+requireEnv(["PORT", "REDIS_URL", "ZH_ROUTER_URL", "ZH_BRAIN_URL", "CODEX_API_KEY"]);
+warnEnv(["CODEX_MODEL", "DOCKER_HOST", "ZH_EXECUTOR_TIMEOUT_MS"]);
 
 const config = loadConfig();
 const app = express();
@@ -22,6 +25,7 @@ const repoRoot = path.resolve(__dirname, "../../../..");
 const memoryPath = process.env.ZH_BRAIN_MEMORY_PATH ?? "/root/.hermes/zero-human-memory.json";
 const executorTimeoutMs = Number(process.env.ZH_EXECUTOR_TIMEOUT_MS ?? 15 * 60 * 1000);
 const memoryStore = new HermesCompatibleMemoryStore(memoryPath);
+const routerAuthHeader = `Bearer ${process.env.CODEX_API_KEY}`;
 
 app.use(cors());
 app.use(express.json());
@@ -139,7 +143,7 @@ async function askRouter(task: Task, agent: Agent): Promise<string> {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "authorization": "Bearer sk_9router",
+        "authorization": routerAuthHeader,
         "x-zh-combo": agents.get(task.agentId)?.modelCombo ?? "cheap_stack",
         "x-zh-agent-id": task.agentId,
         "x-zh-task-id": task.id
@@ -318,7 +322,7 @@ async function runCodexExecutor(prompt: string, worktreePath: string): Promise<s
     ...args
   ], worktreePath, {
     CODEX_HOME: process.env.CODEX_HOME ?? "/root/.codex",
-    OPENAI_API_KEY: process.env.CODEX_API_KEY ?? process.env.OPENAI_API_KEY ?? "sk_9router"
+    OPENAI_API_KEY: process.env.CODEX_API_KEY ?? process.env.OPENAI_API_KEY
   });
 }
 

@@ -19,18 +19,19 @@ The brain container routes Codex to 9Router with:
 
 ```env
 CODEX_OPENAI_BASE_URL=http://9router:20128/v1
-CODEX_API_KEY=sk_9router
+CODEX_API_KEY=${ZH_ROUTER_COMPAT_API_KEY}
 CODEX_HOME=/root/.codex
 ```
 
-`CODEX_API_KEY` is the internal bearer token sent to 9Router. Real provider
-keys should stay in 9Router.
+`CODEX_API_KEY` is populated from `ZH_ROUTER_COMPAT_API_KEY`, the private
+internal bearer token sent to 9Router. Real provider keys should stay in
+9Router.
 
 Paperclip's own Codex local adapter also routes through 9Router in Docker:
 
 ```env
 OPENAI_BASE_URL=http://9router:20128/v1
-OPENAI_API_KEY=sk_9router
+OPENAI_API_KEY=${ZH_ROUTER_COMPAT_API_KEY}
 CODEX_OPENAI_BASE_URL=http://9router:20128/v1
 ```
 

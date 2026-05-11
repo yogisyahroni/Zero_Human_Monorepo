@@ -1,6 +1,6 @@
 # Zero-Human PRD Remaining Tasks
 
-Last updated: 2026-05-07
+Last updated: 2026-05-11
 
 This file is the durable handoff tracker for work that remains after the initial Zero-Human monorepo integration. Keep it updated whenever a task is completed so future Codex sessions can continue without relying on chat context.
 
@@ -23,6 +23,10 @@ Done:
 - Persistent Brain memory v1: notes, task outcomes, and skill confidence are stored in the `brain-memory` volume and shown in the dashboard.
 - Hermes-compatible memory store: Brain uses a versioned store adapter aligned with the upstream MemoryProvider contract and reports native contract availability through health/memory APIs.
 - Budget notification v1: cost threshold/quota events create dashboard alerts, optionally send configured webhooks, and paused agents can be resumed.
+- Security hardening: Docker Compose now requires runtime secrets instead of falling back to public dummy values.
+- Docker boundary hardening: Zero-Human no longer mounts the full repository into the app container, and Hermes is internal-only in Compose.
+- CI quality baseline: unit tests run through Vitest and staging migration checks receive explicit CI-only dummy env values.
+- Redis resilience: service event buses retry connection and degrade gracefully when Redis is temporarily unavailable.
 
 ## Priority 1: Real Executor Flow
 
@@ -153,6 +157,10 @@ Dashboard:
 
 Exposed services:
 - 9Router upstream: `http://localhost:20128`
-- Hermes dashboard: `http://localhost:9119`
 - Paperclip upstream: `http://localhost:3100`
 - Zero-Human dashboard: `http://localhost:3003`
+
+Internal services:
+- Hermes dashboard/API: `http://hermes:9119` inside Docker only. It is not
+  exposed to the host by default because Hermes is memory/guidance context, not
+  a public control plane.

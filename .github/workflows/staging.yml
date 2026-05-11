@@ -83,10 +83,16 @@ jobs:
   migration-test:
     name: Migration Test
     runs-on: ubuntu-latest
+    env:
+      BETTER_AUTH_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ZH_ROUTER_COMPAT_API_KEY: ci_dummy_router_key
+      ZH_IMAGE_PREFIX: ghcr.io/yogisyahroni/zero_human_monorepo
     steps:
       - uses: actions/checkout@v4
-      - name: Validate Docker Compose
+      - name: Validate local Docker Compose
         run: docker compose -f docker-compose.yml config --quiet
+      - name: Validate staging Docker Compose
+        run: docker compose -f deploy/docker-compose.staging.yml config --quiet
 
   security-scan:
     name: Security Scan
