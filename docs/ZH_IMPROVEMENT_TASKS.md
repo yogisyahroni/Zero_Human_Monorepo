@@ -3,6 +3,7 @@
 > Generated: 2026-05-10
 > Berdasarkan full code review: PRD, REMAINING_TASKS, package.json, docker-compose.yml, Dockerfile
 > Updated: tambah TASK-12 (Hermes boundary) berdasarkan analisa arsitektur overlap Hermes vs Paperclip
+> Updated: tambah TASK-13..TASK-22 untuk Meeting Room, realtime Owner Dashboard, dan orkestrasi perusahaan end-to-end
 
 ---
 
@@ -24,6 +25,16 @@ Last updated: 2026-05-11
 | TASK-09 | Done | `docs/ARCHITECTURE.md` documents the current runtime boundary. |
 | TASK-10 | Done | `CHANGELOG.md` and repository metadata were added. |
 | TASK-11 | Done | Root `Makefile` provides unified local entry points. |
+| TASK-13 | Planned | Meeting Room domain model, lifecycle, and API contracts. |
+| TASK-14 | Planned | Paperclip Meeting Room UI with transcript, agenda, decisions, and outcomes. |
+| TASK-15 | Planned | Meeting outcomes can create decisions, action items, and child issues. |
+| TASK-16 | Planned | Hermes stores meeting summaries and role learnings as memory/guidance. |
+| TASK-17 | Planned | Zero-Human Studio Owner Dashboard updates realtime. |
+| TASK-18 | Planned | Zero-Human Studio exposes live execution monitoring for Paperclip/Codex runs. |
+| TASK-19 | Planned | Org hierarchy and Paperclip sync semantics are canonical and idempotent. |
+| TASK-20 | Planned | Skills and MCP tools are assigned automatically to hired agents. |
+| TASK-21 | Planned | Meeting, blocker, retry, and token-cost guardrails prevent loops. |
+| TASK-22 | Planned | Zero-Human Studio owner workflows are audited and polished. |
 
 ---
 
@@ -46,7 +57,215 @@ Last verified: 2026-05-11
 | TASK-11 | Root `Makefile` provides canonical `up`, `down`, `logs`, `build`, and `test` commands. |
 | TASK-12 | Hermes is documented and configured as internal memory/guidance context; execution remains owned by Zero-Human/Paperclip adapters. |
 
-No open implementation task remains in this tracker.
+Foundational hardening is complete. The next open implementation phase is TASK-13 through TASK-22.
+
+---
+
+## Next Phase Task Queue - Meeting Rooms & Realtime Owner Dashboard
+
+Last added: 2026-05-11
+
+Design principle: Zero-Human Studio is the owner/control plane. Paperclip is the company execution board. Hermes is the live brain and memory/guidance layer. 9Router remains only the AI gateway and must not be hardcoded around.
+
+Execution order:
+
+1. TASK-13 establishes the Meeting Room data model and contracts.
+2. TASK-14 exposes rooms in Paperclip so agents can meet by division or cross-division.
+3. TASK-15 turns meeting outcomes into decisions, artifacts, and executable child issues.
+4. TASK-16 makes Hermes remember meeting outcomes without becoming the executor.
+5. TASK-17 and TASK-18 make Zero-Human Studio realtime and observable for the owner.
+6. TASK-19 through TASK-22 clean up org sync, skills/MCP, loop control, and weak Studio surfaces.
+
+| Task | Area | Primary Surface | Priority | Status |
+|------|------|-----------------|----------|--------|
+| TASK-13 | Meeting Rooms | Paperclip API + data model | P0 | Planned |
+| TASK-14 | Meeting Rooms | Paperclip UI | P0 | Planned |
+| TASK-15 | Meeting Rooms | Paperclip automation | P0 | Planned |
+| TASK-16 | Hermes Brain | Hermes/Paperclip bridge | P0 | Planned |
+| TASK-17 | Owner Dashboard | Zero-Human Studio | P0 | Planned |
+| TASK-18 | Execution Monitor | Zero-Human Studio | P1 | Planned |
+| TASK-19 | Organization Sync | Zero-Human Studio + Paperclip | P0 | Planned |
+| TASK-20 | Skills/MCP Automation | Zero-Human Studio + Paperclip | P0 | Planned |
+| TASK-21 | Reliability/Cost | Paperclip + Hermes + 9Router | P1 | Planned |
+| TASK-22 | UX Quality | Zero-Human Studio | P1 | Planned |
+
+### TASK-13 - Meeting Room Domain Model And API
+
+Problem:
+Agents need a structured place to discuss work by division, but the current flow only has issue comments and ad hoc runs. That makes discussions hard to read, hard to summarize, and hard to turn into accountable work.
+
+Implementation:
+- Add meeting room entities for `room`, `participant`, `message`, `decision`, `action_item`, and `artifact_reference`.
+- Support room types: `division`, `cross_division`, and `owner_review`.
+- Link every room to a company, optional division, optional issue, optional project, and optional parent task.
+- Add APIs to create rooms, list rooms, join participants, append messages, close rooms, and fetch summaries.
+- Keep meeting data separate from execution runs; a room can create or link issues, but it is not itself a Codex run.
+
+Acceptance criteria:
+- A division can create a meeting room with its own agents as participants.
+- Cross-division rooms can include multiple roles.
+- Every meeting has a clear lifecycle: `draft`, `active`, `summarizing`, `closed`, `archived`.
+- Meeting records survive container rebuilds because they live in Paperclip DB, not memory.
+
+### TASK-14 - Paperclip Meeting Room UI
+
+Problem:
+The owner and agents need to see what happened in a meeting without digging through scattered issue comments.
+
+Implementation:
+- Add a `Meetings` navigation item in Paperclip.
+- Add list view with room title, division, participants, linked issue/project, status, last activity, and unread count.
+- Add detail view with readable conversation transcript, participant badges, message timestamps, agenda, decisions, action items, and linked artifacts.
+- Allow filtering by division, agent, status, issue, and date.
+- Add an issue-side panel showing meetings linked to that issue.
+
+Acceptance criteria:
+- A user can open a room and read the complete conversation clearly.
+- Meeting outcomes are visible above or beside the transcript.
+- The room can be linked back to issues and agents.
+- Empty states explain what action is available without becoming marketing copy.
+
+### TASK-15 - Meeting Outcomes To Decisions And Work
+
+Problem:
+Meetings are only useful if they produce clear next steps. Otherwise they become another place where agents talk but do not execute.
+
+Implementation:
+- Add structured outcome extraction: decisions, blockers, action items, owners, due dates, and follow-up issues.
+- Add a `Create child issue` action from any action item.
+- Add a `Request hire` action when the meeting identifies a missing role.
+- Add a `Mark decision accepted` action for owner review meetings.
+- Require every closed meeting to have at least one disposition: `no_action`, `decision_recorded`, `issues_created`, `blocked_by_owner`, or `hiring_requested`.
+
+Acceptance criteria:
+- Closing a meeting without a disposition is blocked.
+- A meeting can create child issues assigned to the right agent or division.
+- Hiring requests flow through Paperclip permissions, not Zero-Human direct creation.
+- The owner can see meeting outcomes without reading the full transcript.
+
+### TASK-16 - Hermes Meeting Memory Sync
+
+Problem:
+Hermes should act as company memory and guidance, but meeting knowledge currently does not reliably become future context.
+
+Implementation:
+- Publish meeting summary events from Paperclip to the Hermes bridge.
+- Store summaries, decisions, recurring blockers, role needs, and skill signals in Hermes memory.
+- Let Hermes generate guidance notes for future runs based on meeting outcomes.
+- Do not let Hermes execute code, create agents directly, or mutate Paperclip state without Paperclip APIs.
+
+Acceptance criteria:
+- Closed meeting summaries appear in Hermes memory.
+- Future agent guidance can reference relevant past meeting decisions.
+- Hermes remains memory-only and does not become a second executor.
+- Duplicate meeting summaries are deduped by room ID and version.
+
+### TASK-17 - Realtime Zero-Human Studio Owner Dashboard
+
+Problem:
+The owner dashboard is not realtime enough. It shows stale counts and hides what the company is currently doing.
+
+Implementation:
+- Add a realtime event channel for Paperclip issue changes, agent runs, Hermes memory events, repo sync, 9Router health, and Docker/service health.
+- Update dashboard cards live without manual refresh.
+- Add a company activity timeline with event type, source, affected agent, affected issue, and timestamp.
+- Add stale-data indicators when websocket/SSE is disconnected.
+- Preserve polling fallback for environments where realtime transport is unavailable.
+
+Acceptance criteria:
+- Agent status, active tasks, budget/router cost, repo readiness, and Paperclip sync status update automatically.
+- Dashboard clearly shows whether data is live or stale.
+- Manual `Sync` remains available but is not required for normal operation.
+- Realtime updates do not create excessive CPU usage.
+
+### TASK-18 - Live Execution Monitor In Zero-Human Studio
+
+Problem:
+Codex execution inside Paperclip is hard to inspect. The owner cannot easily see what files changed, what command is running, or why a run is stuck.
+
+Implementation:
+- Add an Execution Monitor page in Zero-Human Studio.
+- Show active Paperclip runs with agent, issue, model combo, working directory, command status, and duration.
+- Stream run transcript in a terminal-like panel.
+- Show changed files, generated artifacts, and git diff summary when available.
+- Add filters for agent, issue, repo, failed runs, long-running runs, and high-token runs.
+
+Acceptance criteria:
+- The owner can inspect a running task without opening Paperclip details manually.
+- Failed runs show the root error and next recommended owner action.
+- File changes are visible before push when the executor records them.
+- Monitor is read-only unless a later task explicitly adds controls.
+
+### TASK-19 - Org Hierarchy And Paperclip Sync Semantics
+
+Problem:
+Zero-Human and Paperclip can drift into confusing structures, such as duplicate CTO roles or peer roles that should report into a division leader.
+
+Implementation:
+- Define canonical reporting rules in Zero-Human: CEO at top, C-level leaders under CEO, leads under their department leader, specialists under leads.
+- Make Paperclip sync idempotent by role slug and canonical title.
+- Add duplicate detection and merge suggestions for agents with overlapping roles.
+- Make `backend lead`, `maintenance bot`, and similar roles report to CTO by default, not directly to CEO.
+- Keep user-created exceptions explicit and visible.
+
+Acceptance criteria:
+- Sync does not create duplicate CTO/CEO roles.
+- Paperclip org chart matches Zero-Human canonical hierarchy.
+- Missing roles are shown as missing, not auto-created unless Paperclip hiring workflow approves them.
+- Owner can see drift and apply a correction.
+
+### TASK-20 - Automatic Skill And MCP Assignment
+
+Problem:
+Skills and MCP tools are not consistently attached to agents after hiring or after new skill imports.
+
+Implementation:
+- Add role-to-skill matching based on department, title, capabilities, tags, and imported skill metadata.
+- Add role-to-MCP matching with Sequential Thinking MCP required for every agent.
+- When a new agent is hired, auto-attach the relevant skills and MCP tools before the first run.
+- When a new skill is imported, evaluate existing agents and mark relevant pending/auto assignments.
+- Surface skill/MCP assignment state in both Zero-Human Studio and Paperclip.
+
+Acceptance criteria:
+- New Android developer agents receive Android skills automatically when those skills exist.
+- Every agent gets Sequential Thinking MCP.
+- Paperclip skill list shows the attached Zero-Human-managed skills.
+- Duplicate skills are not attached twice.
+
+### TASK-21 - Meeting, Blocker, And Cost Guardrails
+
+Problem:
+The system can burn tokens through repeated planning, repeated blockers, and meetings that do not produce concrete action.
+
+Implementation:
+- Add bounded meeting rounds with max turns, max tokens, and required disposition.
+- Add blocker escalation rules: diagnose, delegate, request hire, ask owner, or close with evidence.
+- Add high-cost run detection and owner notification.
+- Add 9Router combo preservation rules: app code must request model combos, not hardcode providers or model names.
+- Add guardrails so Hermes intervention guides action without spamming comments every few seconds.
+
+Acceptance criteria:
+- A blocked task cannot loop indefinitely.
+- Meetings cannot stay active forever without outcome.
+- The owner can see token/cost warnings from Zero-Human Studio.
+- `combotest` and other 9Router combos remain configurable in 9Router, not hardcoded in app logic.
+
+### TASK-22 - Zero-Human Studio Owner Workflow Polish
+
+Problem:
+Several Studio surfaces are useful but feel unfinished, stale, or disconnected from the Paperclip/Hermes reality.
+
+Implementation:
+- Audit all sidebar pages for empty states, stale data, broken controls, and missing links to Paperclip/Hermes/9Router.
+- Add clear owner-level workflows: company health, active blockers, pending hiring requests, pending approvals, repo status, deployment status, meetings, and recent memory.
+- Replace manual-only sync flows with live status plus explicit retry controls.
+- Add direct deep links from Studio cards to Paperclip issues, Paperclip agents, Hermes memory entries, and 9Router usage.
+
+Acceptance criteria:
+- Owner dashboard answers: what is running, what is blocked, what needs my decision, what changed, and what it cost.
+- Sidebar pages no longer feel like placeholders.
+- Empty states tell the owner what to do next.
+- Studio becomes the main command dashboard, not only a passive status page.
 
 ---
 
