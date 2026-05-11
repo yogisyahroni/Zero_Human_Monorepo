@@ -31,7 +31,16 @@ const app = express();
 const companyState = { ...config.company };
 const agents = new Map<string, Agent>(agentsFromConfig(config).map((agent) => [agent.id, agent]));
 const tasks = new Map<string, Task>();
-const events: Array<{ event: string; timestamp: string; summary: string }> = [];
+type OwnerActivityEvent = {
+  id: string;
+  event: string;
+  timestamp: string;
+  summary: string;
+  source: string;
+  agentId?: string;
+  issueKey?: string;
+};
+const events: OwnerActivityEvent[] = [];
 const alerts: Array<{
   id: string;
   event: string;
@@ -46,6 +55,9 @@ const routerMetrics = { requests: 0, costUsd: 0, inputTokens: 0, outputTokens: 0
 const skillProgress = new Map<string, { agentId: string; skill: string; runs: number; confidence: number; lastTaskId?: string; updatedAt: string }>();
 const budgetFlags = { thresholdPublished: false, globalPaused: false, pausedAgents: new Set<string>() };
 const bus = new RedisEventBus(config.infrastructure.redis_url, "hr");
+const ownerStateClients = new Set<express.Response>();
+let ownerStateSequence = 0;
+let ownerStateBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
 const execFileAsync = promisify(execFile);
@@ -362,9 +374,70 @@ type AgentIssuePolicyEvaluation = {
   requiresHumanReview: boolean;
 };
 
+function inferOwnerActivity(event: string, summary: string): Pick<OwnerActivityEvent, "source"> & Partial<Pick<OwnerActivityEvent, "agentId" | "issueKey">> {
+  const normalizedSummary = summary.toLowerCase();
+  const agentId = Array.from(agents.keys()).find((id) => normalizedSummary.includes(id.toLowerCase()));
+  const issueKey = summary.match(/\b[A-Z]{2,10}-\d+\b/)?.[0] ?? summary.match(/\btask_[a-zA-Z0-9_-]+\b/)?.[0];
+  return { source: event.split(":")[0] || "system", agentId, issueKey };
+}
+
 function addEvent(event: string, summary: string): void {
-  events.unshift({ event, timestamp: new Date().toISOString(), summary });
+  const details = inferOwnerActivity(event, summary);
+  events.unshift({
+    id: nanoid(8),
+    event,
+    timestamp: new Date().toISOString(),
+    summary,
+    ...details
+  });
   events.splice(80);
+  scheduleOwnerStateBroadcast(event);
+}
+
+function sendOwnerStateEvent(res: express.Response, event: string, data: unknown): void {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function sendOwnerStateBroadcast(event: string, data: unknown): void {
+  for (const client of ownerStateClients) {
+    try {
+      sendOwnerStateEvent(client, event, data);
+    } catch {
+      ownerStateClients.delete(client);
+    }
+  }
+}
+
+function scheduleOwnerStateBroadcast(reason: string): void {
+  if (ownerStateClients.size === 0 || ownerStateBroadcastTimer) return;
+  ownerStateBroadcastTimer = setTimeout(() => {
+    ownerStateBroadcastTimer = null;
+    void broadcastOwnerState(reason);
+  }, 900);
+}
+
+async function broadcastOwnerState(reason: string): Promise<void> {
+  if (ownerStateClients.size === 0) return;
+  try {
+    const state = await buildOwnerStateSnapshot();
+    const payload = {
+      kind: "state",
+      reason,
+      sequence: ++ownerStateSequence,
+      emittedAt: new Date().toISOString(),
+      state
+    };
+    sendOwnerStateBroadcast("state", payload);
+  } catch (error) {
+    const payload = {
+      kind: "error",
+      sequence: ++ownerStateSequence,
+      emittedAt: new Date().toISOString(),
+      error: (error as Error).message
+    };
+    sendOwnerStateBroadcast("stream-error", payload);
+  }
 }
 
 function applyBudgetOverrides(overrides: BudgetOverrides | null): void {
@@ -4403,7 +4476,7 @@ app.get("/api/workroom", async (_req, res) => {
   res.json(await paperclipWorkroomState());
 });
 
-app.get("/api/state", async (_req, res) => {
+async function buildOwnerStateSnapshot() {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
   const spent = currentSpend();
   const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
@@ -4421,7 +4494,7 @@ app.get("/api/state", async (_req, res) => {
     ...Array.from(skillProgress.values()),
     ...memorySkills.filter((skill) => !liveSkillKeys.has(`${skill.agentId}:${skill.skill}`))
   ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  res.json({
+  return {
     company: companyState,
     infrastructure: {
       redisUrl: config.infrastructure.redis_url,
@@ -4458,7 +4531,41 @@ app.get("/api/state", async (_req, res) => {
       currency: companyState.currency
     },
     combos: config.gateway.combos
+  };
+}
+
+app.get("/api/state/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  ownerStateClients.add(res);
+  sendOwnerStateEvent(res, "connected", {
+    kind: "connected",
+    sequence: ownerStateSequence,
+    emittedAt: new Date().toISOString()
   });
+  try {
+    sendOwnerStateEvent(res, "state", {
+      kind: "state",
+      reason: "connect",
+      sequence: ++ownerStateSequence,
+      emittedAt: new Date().toISOString(),
+      state: await buildOwnerStateSnapshot()
+    });
+  } catch (error) {
+    sendOwnerStateEvent(res, "stream-error", {
+      kind: "error",
+      sequence: ++ownerStateSequence,
+      emittedAt: new Date().toISOString(),
+      error: (error as Error).message
+    });
+  }
+  req.on("close", () => ownerStateClients.delete(res));
+});
+
+app.get("/api/state", async (_req, res) => {
+  res.json(await buildOwnerStateSnapshot());
 });
 
 app.post("/api/repositories", async (req, res) => {
@@ -4949,5 +5056,11 @@ app.listen(port, config.orchestrator.host, () => {
   if (Number.isFinite(paperclipHermesMonitorIntervalMs) && paperclipHermesMonitorIntervalMs > 0) {
     const timer = setInterval(() => schedulePaperclipHermesMonitor("periodic"), paperclipHermesMonitorIntervalMs);
     if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
+  const ownerDashboardTimer = setInterval(() => {
+    if (ownerStateClients.size > 0) scheduleOwnerStateBroadcast("service-health");
+  }, 15000);
+  if (typeof ownerDashboardTimer === "object" && "unref" in ownerDashboardTimer && typeof ownerDashboardTimer.unref === "function") {
+    ownerDashboardTimer.unref();
   }
 });

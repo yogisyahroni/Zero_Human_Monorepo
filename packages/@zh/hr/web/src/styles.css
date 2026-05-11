@@ -115,6 +115,43 @@ h2 {
   color: var(--muted);
   margin-bottom: 0;
 }
+.topbarActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.realtimeBadge {
+  display: grid;
+  grid-template-columns: 10px auto;
+  gap: 2px 8px;
+  align-items: center;
+  min-width: 136px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(28, 32, 31, .86);
+}
+.realtimeBadge span {
+  width: 9px;
+  height: 9px;
+  border-radius: 99px;
+  background: var(--muted);
+  grid-row: span 2;
+}
+.realtimeBadge strong {
+  font-size: 13px;
+  line-height: 1;
+}
+.realtimeBadge small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.realtimeBadge.live span { background: #4ee68a; box-shadow: 0 0 14px rgba(78, 230, 138, .45); }
+.realtimeBadge.fallback span,
+.realtimeBadge.connecting span { background: #f5c84b; }
+.realtimeBadge.stale span { background: #ff5f5f; }
 .iconText { min-width: 92px; }
 .viewHeader {
   border: 1px solid var(--line);
@@ -926,12 +963,28 @@ textarea {
 }
 .events li {
   display: grid;
-  grid-template-columns: 86px 1fr;
+  grid-template-columns: 86px minmax(0, 1fr);
   gap: 8px;
   color: var(--muted);
   font-size: 13px;
+  align-items: start;
+}
+.events time { color: var(--accent-2); }
+.events strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+.events span,
+.events small {
+  display: block;
+  overflow-wrap: anywhere;
 }
 .events span { color: var(--ink); }
+.events small {
+  margin-top: 4px;
+  color: var(--muted);
+}
 .upstreamList {
   display: grid;
   gap: 10px;

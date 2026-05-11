@@ -297,13 +297,19 @@ type WorkroomState = {
   runs: WorkroomRun[];
 };
 
+type RealtimeState = {
+  status: "connecting" | "live" | "fallback" | "stale";
+  lastSeenAt: string;
+  message: string;
+};
+
 type State = {
   company: { name: string; description: string; budget_usd: number; currency: string };
   infrastructure: { redisUrl: string; worktreeBase: string };
   policies: { approval_required: boolean; approval_threshold_usd: number; auto_merge: boolean };
   agents: Agent[];
   tasks: Task[];
-  events: Array<{ event: string; timestamp: string; summary: string }>;
+  events: Array<{ id?: string; event: string; timestamp: string; summary: string; source?: string; agentId?: string; issueKey?: string }>;
   alerts: Array<{
     id: string;
     event: string;
@@ -515,6 +521,11 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
 function App() {
   const [state, setState] = useState<State>(fallbackState);
   const [workroom, setWorkroom] = useState<WorkroomState>(fallbackWorkroom);
+  const [realtime, setRealtime] = useState<RealtimeState>({
+    status: "connecting",
+    lastSeenAt: "",
+    message: "Connecting owner dashboard stream"
+  });
   const [activeView, setActiveView] = useState<ViewId>("operations");
   const [selectedWorkroomRunId, setSelectedWorkroomRunId] = useState("");
   const [selectedAgent, setSelectedAgent] = useState("cto");
@@ -592,9 +603,15 @@ function App() {
     agentCaps: {}
   });
 
-  async function refresh() {
+  async function refresh(mode: "manual" | "fallback" = "manual") {
     const response = await fetch("/api/state");
-    setState(await response.json());
+    const body = await response.json();
+    setState(body);
+    setRealtime((current) => ({
+      status: current.status === "live" && mode === "manual" ? "live" : mode === "fallback" ? "fallback" : current.status,
+      lastSeenAt: new Date().toISOString(),
+      message: mode === "fallback" ? "Polling fallback refreshed owner state" : "Manual refresh complete"
+    }));
   }
 
   async function refreshWorkroom() {
@@ -603,14 +620,87 @@ function App() {
   }
 
   useEffect(() => {
-    refresh();
-    const interval = window.setInterval(refresh, 1800);
-    return () => window.clearInterval(interval);
+    let closed = false;
+    let lastSeen = Date.now();
+    let source: EventSource | null = null;
+    refresh("fallback").catch((error) => {
+      if (!closed) {
+        setRealtime({
+          status: "stale",
+          lastSeenAt: new Date().toISOString(),
+          message: `Initial state fetch failed: ${(error as Error).message}`
+        });
+      }
+    });
+
+    if ("EventSource" in window) {
+      source = new EventSource("/api/state/stream");
+      source.addEventListener("connected", () => {
+        lastSeen = Date.now();
+        setRealtime({
+          status: "live",
+          lastSeenAt: new Date().toISOString(),
+          message: "Connected to owner dashboard stream"
+        });
+      });
+      source.addEventListener("state", (event) => {
+        lastSeen = Date.now();
+        const payload = JSON.parse((event as MessageEvent).data) as { state?: State; reason?: string; emittedAt?: string };
+        if (payload.state) setState(payload.state);
+        setRealtime({
+          status: "live",
+          lastSeenAt: payload.emittedAt ?? new Date().toISOString(),
+          message: payload.reason ? `Live update: ${payload.reason}` : "Live update received"
+        });
+      });
+      source.addEventListener("stream-error", (event) => {
+        const payload = JSON.parse((event as MessageEvent).data) as { error?: string; emittedAt?: string };
+        setRealtime({
+          status: "fallback",
+          lastSeenAt: payload.emittedAt ?? new Date().toISOString(),
+          message: payload.error ?? "Realtime stream reported an error; polling fallback remains active"
+        });
+      });
+      source.onerror = () => {
+        if (closed) return;
+        setRealtime((current) => ({
+          status: Date.now() - lastSeen > 30000 ? "stale" : "fallback",
+          lastSeenAt: current.lastSeenAt,
+          message: "Realtime stream reconnecting; polling fallback is active"
+        }));
+      };
+    } else {
+      setRealtime({
+        status: "fallback",
+        lastSeenAt: new Date().toISOString(),
+        message: "Browser does not support realtime streams; using polling fallback"
+      });
+    }
+
+    const fallbackInterval = window.setInterval(() => {
+      if (Date.now() - lastSeen > 12000) void refresh("fallback");
+    }, 15000);
+    const staleInterval = window.setInterval(() => {
+      if (Date.now() - lastSeen > 30000) {
+        setRealtime((current) => ({
+          ...current,
+          status: "stale",
+          message: "Owner dashboard stream is stale; last known data is shown"
+        }));
+      }
+    }, 5000);
+
+    return () => {
+      closed = true;
+      source?.close();
+      window.clearInterval(fallbackInterval);
+      window.clearInterval(staleInterval);
+    };
   }, []);
 
   useEffect(() => {
     refreshWorkroom();
-    const interval = window.setInterval(refreshWorkroom, 3500);
+    const interval = window.setInterval(refreshWorkroom, 8000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -630,6 +720,9 @@ function App() {
   const budgetRemaining = Math.max(0, state.budget.global - state.budget.spent);
   const pausedAgents = state.agents.filter((agent) => agent.status === "paused").length;
   const currentView = views.find((view) => view.id === activeView) ?? views[0];
+  const realtimeAge = realtime.lastSeenAt
+    ? Math.max(0, Math.round((Date.now() - new Date(realtime.lastSeenAt).getTime()) / 1000))
+    : null;
   const roleSkillRows = state.agents.map((agent) => ({
     agent,
     learned: state.skillProgress.filter((skill) => skill.agentId === agent.id)
@@ -1082,9 +1175,16 @@ function App() {
             <h1>{state.company.name}</h1>
             <p>{state.company.description}</p>
           </div>
-          <button className="iconText" onClick={refresh} disabled={busy}>
-            <RefreshCw size={17} /> Sync
-          </button>
+          <div className="topbarActions">
+            <div className={`realtimeBadge ${realtime.status}`} title={realtime.message}>
+              <span />
+              <strong>{realtime.status === "live" ? "Live" : realtime.status === "stale" ? "Stale" : realtime.status === "fallback" ? "Fallback" : "Connecting"}</strong>
+              <small>{realtimeAge === null ? "waiting" : `${realtimeAge}s ago`}</small>
+            </div>
+            <button className="iconText" onClick={() => refresh("manual")} disabled={busy}>
+              <RefreshCw size={17} /> Sync
+            </button>
+          </div>
         </header>
 
         <section className="viewHeader">
@@ -2286,15 +2386,21 @@ function App() {
           <div className="panel events">
             <div className="panelHead">
               <div>
-                <h2>Event stream</h2>
-                <p>{state.infrastructure.redisUrl}</p>
+                <h2>Company activity</h2>
+                <p>{realtime.message} · {state.infrastructure.redisUrl}</p>
               </div>
             </div>
             <ol>
               {state.events.slice(0, 10).map((event, index) => (
-                <li key={`${event.timestamp}-${index}`}>
+                <li key={event.id ?? `${event.timestamp}-${index}`}>
                   <time>{new Date(event.timestamp).toLocaleTimeString()}</time>
-                  <span>{event.event}</span>
+                  <div>
+                    <strong>{event.event}</strong>
+                    <span>{event.summary}</span>
+                    <small>
+                      {[event.source, event.agentId, event.issueKey].filter(Boolean).join(" · ") || "company"}
+                    </small>
+                  </div>
                 </li>
               ))}
             </ol>
