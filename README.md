@@ -30,8 +30,15 @@ On shells with OpenSSL:
 openssl rand -hex 32
 ```
 
-Set `ZH_ROUTER_COMPAT_API_KEY` to a private internal token used by services when
-they call 9Router. Configure real provider keys in the 9Router UI, or put a
+Set `ZH_ROUTER_COMPAT_API_KEY` to the API key created in the 9Router UI when
+`Require API key` is enabled. This is the gateway token used by Hermes,
+Paperclip, and Codex when they call 9Router. If you run Codex-compatible tools
+from the host, set `CODEX_API_KEY` to the same value and keep
+`OPENAI_BASE_URL` / `CODEX_OPENAI_BASE_URL` pointed at
+`http://localhost:20128/v1`.
+
+Do not put the 9Router gateway token into provider key fields such as
+`OPENAI_API_KEY`. Configure real provider keys in the 9Router UI, or put a
 bootstrap provider key in `.env` for 9Router only.
 
 ```powershell
