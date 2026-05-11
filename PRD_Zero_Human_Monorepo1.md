@@ -3,7 +3,7 @@
 
 **Version:** 1.0  
 **Date:** 7 Mei 2026  
-**Status:** Implemented baseline, hardening in progress
+**Status:** Implemented baseline, hardening complete
 
 > Implementation note: current runtime details and security hardening tasks are
 > tracked in `PRD_REMAINING_TASKS.md` and `docs/ZH_IMPROVEMENT_TASKS.md`.
@@ -49,7 +49,7 @@ Komponen inti diambil dari 3 repository open-source aktif. Struktur monorepo men
 |---------|---------------|------|---------|
 | `@zh/router` | [decolua/9router](https://github.com/decolua/9router) | Local AI gateway dengan token saver & smart fallback | MIT |
 | `@zh/brain` | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | Persistent memory, skill evolution, subagent spawner | MIT |
-| `@zh/hr` | [paperclip-org/paperclip](https://github.com/paperclip-org/paperclip) | Orchestration dashboard, task queue, git worktree | MIT |
+| `@zh/hr` | [paperclipai/paperclip](https://github.com/paperclipai/paperclip) | Orchestration dashboard, task queue, git worktree | MIT |
 
 **Fork Strategy:**
 - Clone upstream ke `packages/@zh/{name}` via `git subtree add`
@@ -61,7 +61,7 @@ Komponen inti diambil dari 3 repository open-source aktif. Struktur monorepo men
 # Add upstream sebagai remote
 git remote add upstream-router https://github.com/decolua/9router.git
 git remote add upstream-brain https://github.com/NousResearch/hermes-agent.git
-git remote add upstream-hr https://github.com/paperclip-org/paperclip.git
+git remote add upstream-hr https://github.com/paperclipai/paperclip.git
 
 # Subtree add (squash history)
 git subtree add --prefix=packages/@zh/router upstream-router main --squash
@@ -485,7 +485,7 @@ Berikut adalah repository asli (upstream) yang perlu di-fork atau di-pull via gi
 |---------|---------------|-----|--------|---------|
 | `@zh/router` | 9Router | `https://github.com/decolua/9router` | `main` | MIT |
 | `@zh/brain` | Hermes Agent | `https://github.com/NousResearch/hermes-agent` | `main` | MIT |
-| `@zh/hr` | Paperclip | `https://github.com/paperclip-org/paperclip` | `main` | MIT |
+| `@zh/hr` | Paperclip | `https://github.com/paperclipai/paperclip` | `main` | MIT |
 
 **Catatan:** PRD awal menyebut `NousResearch/9Router`, tetapi upstream publik yang dipakai repo ini adalah `decolua/9router`. Sebelum sync, tetap verifikasi ulang karena upstream bisa berubah, rename, archive, atau pindah organisasi.
 
@@ -499,7 +499,7 @@ cd zero-human
 # 2. Add upstream repos sebagai remote references
 git remote add upstream-router https://github.com/decolua/9router.git
 git remote add upstream-brain https://github.com/NousResearch/hermes-agent.git
-git remote add upstream-hr https://github.com/paperclip-org/paperclip.git
+git remote add upstream-hr https://github.com/paperclipai/paperclip.git
 
 # 3. Pull upstream code ke packages/ via git subtree
 git subtree add --prefix=packages/@zh/router upstream-router main --squash
@@ -589,7 +589,7 @@ mkdir -p config
 # Add upstream remotes if not exists
 git remote get-url upstream-router >/dev/null 2>&1 || git remote add upstream-router https://github.com/decolua/9router.git
 git remote get-url upstream-brain >/dev/null 2>&1 || git remote add upstream-brain https://github.com/NousResearch/hermes-agent.git
-git remote get-url upstream-hr >/dev/null 2>&1 || git remote add upstream-hr https://github.com/paperclip-org/paperclip.git
+git remote get-url upstream-hr >/dev/null 2>&1 || git remote add upstream-hr https://github.com/paperclipai/paperclip.git
 
 # Fetch upstream
 git fetch upstream-router
@@ -669,7 +669,7 @@ jobs:
         upstream:
           - { name: router, repo: decolua/9router, branch: main }
           - { name: brain, repo: NousResearch/hermes-agent, branch: main }
-          - { name: hr, repo: paperclip-org/paperclip, branch: main }
+          - { name: hr, repo: paperclipai/paperclip, branch: main }
 
     steps:
       - uses: actions/checkout@v4
@@ -748,26 +748,26 @@ Kalau upstream rilis versi stabil dengan npm package atau Docker image:
 ## 11. Milestones & Roadmap
 
 ### Phase 1: Foundation (Week 1-2)
-- [ ] Setup monorepo structure (pnpm workspaces)
-- [ ] Fork 3 repo ke packages/ dengan subtree
-- [ ] Buat `@zh/sdk` dengan shared types & events
-- [ ] Docker Compose jalan, semua service health
+- [x] Setup monorepo structure (pnpm workspaces)
+- [x] Fork 3 repo ke packages/ dengan subtree
+- [x] Buat `@zh/sdk` dengan shared types & events
+- [x] Docker Compose jalan, semua service health
 
 ### Phase 2: Integration (Week 3-4)
-- [ ] Unified config loader (`zero-human.yaml`)
-- [ ] Redis event bus antar service
-- [ ] Paperclip dashboard bisa lihat Hermes memory status
-- [ ] 9Router metrics muncul di dashboard
+- [x] Unified config loader (`zero-human.yaml`)
+- [x] Redis event bus antar service
+- [x] Paperclip dashboard bisa lihat Hermes memory status
+- [x] 9Router metrics muncul di dashboard
 
 ### Phase 3: Intelligence (Week 5-6)
-- [ ] Hermes auto-spawn Claude Code via Docker
-- [ ] Skill evolution tracking di dashboard
-- [ ] Budget alerts & auto-pause
+- [x] Hermes memory/guidance bridge untuk Paperclip agent execution
+- [x] Skill evolution tracking di dashboard
+- [x] Budget alerts & auto-pause
 
 ### Phase 4: Polish (Week 7-8)
-- [ ] GitHub Actions sync pipeline
-- [ ] Patch management automation
-- [ ] Documentation & deployment guide
+- [x] GitHub Actions sync pipeline
+- [x] Patch management automation
+- [x] Documentation & deployment guide
 - [ ] Community release
 
 ---
