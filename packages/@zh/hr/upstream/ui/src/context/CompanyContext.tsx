@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
-import { companiesApi } from "../api/companies";
+import { companiesApi, type CompanyStats } from "../api/companies";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
@@ -36,11 +36,40 @@ const STORAGE_KEY = "paperclip.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 
+type BootstrapCompany = Pick<Company, "id"> & Partial<Pick<Company, "createdAt" | "updatedAt">>;
+
+function timestampValue(value: unknown): number {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  const parsed = Date.parse(String(value));
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function compareBootstrapCompanies(a: BootstrapCompany, b: BootstrapCompany, stats?: CompanyStats): number {
+  const aStats = stats?.[a.id] ?? { agentCount: 0, issueCount: 0 };
+  const bStats = stats?.[b.id] ?? { agentCount: 0, issueCount: 0 };
+  const issueDelta = aStats.issueCount - bStats.issueCount;
+  if (issueDelta !== 0) return issueDelta;
+  const agentDelta = aStats.agentCount - bStats.agentCount;
+  if (agentDelta !== 0) return agentDelta;
+  const updatedDelta = timestampValue(a.updatedAt) - timestampValue(b.updatedAt);
+  if (updatedDelta !== 0) return updatedDelta;
+  return timestampValue(a.createdAt) - timestampValue(b.createdAt);
+}
+
+function pickBestBootstrapCompany(companies: BootstrapCompany[], stats?: CompanyStats): string | null {
+  return companies.reduce<BootstrapCompany | null>((best, company) => {
+    if (!best) return company;
+    return compareBootstrapCompanies(company, best, stats) > 0 ? company : best;
+  }, null)?.id ?? null;
+}
+
 export function resolveBootstrapCompanySelection(input: {
-  companies: Array<Pick<Company, "id">>;
-  sidebarCompanies: Array<Pick<Company, "id">>;
+  companies: BootstrapCompany[];
+  sidebarCompanies: BootstrapCompany[];
   selectedCompanyId: string | null;
   storedCompanyId: string | null;
+  stats?: CompanyStats;
 }) {
   if (input.companies.length === 0) return null;
 
@@ -53,7 +82,7 @@ export function resolveBootstrapCompanySelection(input: {
   if (input.storedCompanyId && selectableCompanies.some((company) => company.id === input.storedCompanyId)) {
     return input.storedCompanyId;
   }
-  return selectableCompanies[0]?.id ?? null;
+  return pickBestBootstrapCompany(selectableCompanies, input.stats);
 }
 
 export function shouldClearStoredCompanySelection(input: {
@@ -85,6 +114,16 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   });
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
+  const {
+    data: companyStats,
+    isError: companyStatsError,
+    isLoading: companyStatsLoading,
+  } = useQuery<CompanyStats>({
+    queryKey: queryKeys.companies.stats,
+    queryFn: () => companiesApi.stats(),
+    retry: false,
+    enabled: !companyListUnauthorized,
+  });
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
@@ -103,17 +142,48 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const selectableCompanies = sidebarCompanies.length > 0
+      ? sidebarCompanies
+      : companies;
+    const storedCompanyId = localStorage.getItem(STORAGE_KEY);
+    const hasValidSelectedCompany = Boolean(
+      selectedCompanyId && selectableCompanies.some((company) => company.id === selectedCompanyId),
+    );
+    const hasValidStoredCompany = Boolean(
+      storedCompanyId && selectableCompanies.some((company) => company.id === storedCompanyId),
+    );
+
+    if (
+      selectableCompanies.length > 1
+      && !hasValidSelectedCompany
+      && !hasValidStoredCompany
+      && companyStatsLoading
+      && !companyStatsError
+    ) {
+      return;
+    }
+
     const next = resolveBootstrapCompanySelection({
       companies,
       sidebarCompanies,
       selectedCompanyId,
-      storedCompanyId: localStorage.getItem(STORAGE_KEY),
+      storedCompanyId,
+      stats: companyStats ?? {},
     });
     if (next === null || next === selectedCompanyId) return;
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, companyListUnauthorized, isLoading, selectedCompanyId, sidebarCompanies]);
+  }, [
+    companies,
+    companyListUnauthorized,
+    companyStats,
+    companyStatsError,
+    companyStatsLoading,
+    isLoading,
+    selectedCompanyId,
+    sidebarCompanies,
+  ]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
     setSelectedCompanyIdState(companyId);

@@ -11,6 +11,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { companiesApi } from "@/api/companies";
+import { queryKeys } from "@/lib/queryKeys";
 
 function statusDotColor(status?: string): string {
   switch (status) {
@@ -36,6 +39,12 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
+  const { data: companyStats = {} } = useQuery({
+    queryKey: queryKeys.companies.stats,
+    queryFn: () => companiesApi.stats(),
+    enabled: open,
+    retry: false,
+  });
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -55,19 +64,27 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[220px]">
+      <DropdownMenuContent align="start" className="w-[280px]">
         <DropdownMenuLabel>Companies</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {sidebarCompanies.map((company) => (
-          <DropdownMenuItem
-            key={company.id}
-            onClick={() => setSelectedCompanyId(company.id)}
-            className={company.id === selectedCompany?.id ? "bg-accent" : ""}
-          >
-            <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(company.status)}`} />
-            <span className="truncate">{company.name}</span>
-          </DropdownMenuItem>
-        ))}
+        {sidebarCompanies.map((company) => {
+          const stats = companyStats[company.id] ?? { agentCount: 0, issueCount: 0 };
+          return (
+            <DropdownMenuItem
+              key={company.id}
+              onClick={() => setSelectedCompanyId(company.id)}
+              className={company.id === selectedCompany?.id ? "bg-accent" : ""}
+            >
+              <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(company.status)}`} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{company.name}</span>
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  {company.issuePrefix} · {stats.issueCount} issues · {stats.agentCount} agents
+                </span>
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
         {sidebarCompanies.length === 0 && (
           <DropdownMenuItem disabled>No companies</DropdownMenuItem>
         )}

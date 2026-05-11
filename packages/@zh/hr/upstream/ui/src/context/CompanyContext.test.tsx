@@ -16,6 +16,7 @@ import {
 const mockCompaniesApi = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
+  stats: vi.fn(),
 }));
 
 vi.mock("../api/companies", () => ({
@@ -105,6 +106,19 @@ describe("resolveBootstrapCompanySelection", () => {
       storedCompanyId: "archived-company",
     })).toBe("company-1");
   });
+
+  it("prefers the most active company when no valid bootstrap selection exists", () => {
+    expect(resolveBootstrapCompanySelection({
+      companies: [activeCompany, secondActiveCompany],
+      sidebarCompanies: [activeCompany, secondActiveCompany],
+      selectedCompanyId: null,
+      storedCompanyId: "stale-company",
+      stats: {
+        "company-1": { issueCount: 0, agentCount: 0 },
+        "company-2": { issueCount: 96, agentCount: 14 },
+      },
+    })).toBe("company-2");
+  });
 });
 
 describe("shouldClearStoredCompanySelection", () => {
@@ -141,6 +155,7 @@ describe("CompanyProvider", () => {
         queries: { retry: false },
       },
     });
+    mockCompaniesApi.stats.mockResolvedValue({});
   });
 
   afterEach(async () => {
@@ -155,6 +170,7 @@ describe("CompanyProvider", () => {
   it("does not expose a stale stored company id before companies load", async () => {
     localStorage.setItem("paperclip.selectedCompanyId", "stale-company");
     mockCompaniesApi.list.mockImplementation(() => new Promise(() => {}));
+    mockCompaniesApi.stats.mockImplementation(() => new Promise(() => {}));
     const seen: Array<string | null> = [];
 
     await act(async () => {
@@ -177,6 +193,7 @@ describe("CompanyProvider", () => {
       unauthorized: false,
     });
     mockCompaniesApi.list.mockImplementation(() => new Promise(() => {}));
+    mockCompaniesApi.stats.mockImplementation(() => new Promise(() => {}));
     const seen: Array<string | null> = [];
 
     await act(async () => {
