@@ -28,7 +28,7 @@ Last updated: 2026-05-11
 | TASK-13 | Done | Paperclip Meeting Room DB schema, migration, validators, lifecycle, and API contracts were added. |
 | TASK-14 | Done | Paperclip Meeting Room UI now exposes list/detail views, filters, outcomes, participants, artifacts, and issue links. |
 | TASK-15 | Done | Meeting outcomes now enforce dispositions, accept decisions, create child issues, and request hires through Paperclip. |
-| TASK-16 | Planned | Hermes stores meeting summaries and role learnings as memory/guidance. |
+| TASK-16 | Done | Hermes stores meeting summaries and role learnings as memory/guidance. |
 | TASK-17 | Planned | Zero-Human Studio Owner Dashboard updates realtime. |
 | TASK-18 | Planned | Zero-Human Studio exposes live execution monitoring for Paperclip/Codex runs. |
 | TASK-19 | Planned | Org hierarchy and Paperclip sync semantics are canonical and idempotent. |
@@ -59,8 +59,9 @@ Last verified: 2026-05-11
 | TASK-13 | Paperclip Meeting Room persistence and API contracts passed shared, db, and server typechecks. |
 | TASK-14 | Paperclip Meeting Room UI passed UI and server typechecks; issue detail now links related meeting rooms. |
 | TASK-15 | Paperclip Meeting Room outcomes passed shared, server, and UI typechecks; close disposition guard, decision acceptance, action-item issue creation, and hiring request APIs/UI are implemented. |
+| TASK-16 | Brain memory store tests cover meeting summary dedupe and guidance recall; Paperclip server and Brain typechecks validate the Hermes meeting-memory bridge. |
 
-Foundational hardening is complete. TASK-15 is complete; the next open implementation phase is TASK-16 through TASK-22.
+Foundational hardening is complete. TASK-16 is complete; the next open implementation phase is TASK-17 through TASK-22.
 
 ---
 
@@ -84,7 +85,7 @@ Execution order:
 | TASK-13 | Meeting Rooms | Paperclip API + data model | P0 | Done |
 | TASK-14 | Meeting Rooms | Paperclip UI | P0 | Done |
 | TASK-15 | Meeting Rooms | Paperclip automation | P0 | Done |
-| TASK-16 | Hermes Brain | Hermes/Paperclip bridge | P0 | Planned |
+| TASK-16 | Hermes Brain | Hermes/Paperclip bridge | P0 | Done |
 | TASK-17 | Owner Dashboard | Zero-Human Studio | P0 | Planned |
 | TASK-18 | Execution Monitor | Zero-Human Studio | P1 | Planned |
 | TASK-19 | Organization Sync | Zero-Human Studio + Paperclip | P0 | Planned |

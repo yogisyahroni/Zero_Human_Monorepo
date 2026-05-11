@@ -27,7 +27,7 @@ import {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { issueService, logActivity } from "../services/index.js";
+import { issueService, logActivity, publishMeetingSummaryToHermes } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 type EntityKind = "agent" | "issue" | "project";
@@ -245,6 +245,10 @@ export function meetingRoomRoutes(db: Db) {
       })
       .where(and(eq(meetingRooms.companyId, companyId), eq(meetingRooms.id, roomId)))
       .returning();
+
+    if (room && (room.status === "closed" || room.status === "archived")) {
+      await publishMeetingSummaryToHermes(db, { companyId, roomId: room.id });
+    }
 
     res.json(room);
   });

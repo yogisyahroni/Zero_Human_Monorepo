@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { agentsFromConfig, loadConfig, RedisEventBus, requireEnv, type Agent, Task, upstreamSources, warnEnv, ZHEvent } from "@zh/sdk";
+import { agentsFromConfig, loadConfig, RedisEventBus, requireEnv, type Agent, type MeetingSummaryMemoryPayload, Task, upstreamSources, warnEnv, ZHEvent } from "@zh/sdk";
 import { HermesCompatibleMemoryStore } from "./memory-store.js";
 
 requireEnv(["PORT", "REDIS_URL", "ZH_ROUTER_URL", "ZH_BRAIN_URL", "CODEX_API_KEY"]);
@@ -91,6 +91,47 @@ function roleGuidanceForTask(agent: Agent, requiredSkills: string[]): string {
     "Stay inside this role. Prefer the listed skills when deciding how to plan, edit, validate, and summarize work.",
     "If the task needs a skill outside this list, name the gap in the result instead of silently drifting role."
   ].join("\n");
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean))).slice(0, 50)
+    : [];
+}
+
+function meetingSummaryPayload(body: unknown): MeetingSummaryMemoryPayload | null {
+  if (!body || typeof body !== "object") return null;
+  const source = body as Partial<MeetingSummaryMemoryPayload>;
+  const roomId = typeof source.roomId === "string" ? source.roomId.trim() : "";
+  const companyId = typeof source.companyId === "string" ? source.companyId.trim() : "";
+  const version = typeof source.version === "string" ? source.version.trim() : "";
+  const title = typeof source.title === "string" ? source.title.trim() : "";
+  const status = source.status === "closed" || source.status === "archived" ? source.status : null;
+  if (!roomId || !companyId || !version || !title || !status) return null;
+  return {
+    roomId,
+    companyId,
+    version,
+    title,
+    status,
+    division: typeof source.division === "string" ? source.division.trim() : source.division ?? null,
+    summary: typeof source.summary === "string" ? source.summary.trim().slice(0, 8000) : source.summary ?? null,
+    decisions: stringArray(source.decisions),
+    blockers: stringArray(source.blockers),
+    actionItems: stringArray(source.actionItems),
+    roleNeeds: stringArray(source.roleNeeds),
+    skillSignals: stringArray(source.skillSignals),
+    participantAgentIds: stringArray(source.participantAgentIds),
+    projectId: typeof source.projectId === "string" ? source.projectId.trim() : source.projectId ?? null,
+    issueId: typeof source.issueId === "string" ? source.issueId.trim() : source.issueId ?? null,
+    outcome: source.outcome && typeof source.outcome === "object" ? source.outcome : null,
+    closedAt: typeof source.closedAt === "string" ? source.closedAt : source.closedAt ?? null,
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString()
+  };
+}
+
+function recordMeetingSummary(payload: MeetingSummaryMemoryPayload) {
+  return memoryStore.recordMeetingSummary(payload);
 }
 
 function hermesMemoryContractStatus(): {
@@ -458,6 +499,9 @@ async function handleTask(task: Task): Promise<void> {
 }
 
 bus.on<Task>(ZHEvent.TASK_ASSIGNED, async (message) => handleTask(message.payload));
+bus.on<MeetingSummaryMemoryPayload>(ZHEvent.MEETING_SUMMARY, async (message) => {
+  recordMeetingSummary(message.payload);
+});
 bus.on<{ agentId: string }>(ZHEvent.AGENT_SPAWNED, async (message) => {
   const agent = agents.get(message.payload.agentId);
   if (!agent) return;
@@ -493,6 +537,8 @@ app.get("/api/memory", (_req, res) => {
     notes: persisted.notes,
     outcomes: persisted.outcomes,
     skills: Object.values(persisted.skills),
+    meetings: Object.values(persisted.meetings),
+    meetingGuidance: persisted.meetingGuidance,
     native: hermesMemoryContractStatus()
   });
 });
@@ -505,6 +551,23 @@ app.post("/api/memory/remember", (req, res) => {
   }
   memoryStore.remember(agentId, note.slice(0, 1200));
   res.status(201).json({ ok: true, agentId });
+});
+
+app.post("/api/memory/meeting-summary", async (req, res) => {
+  const payload = meetingSummaryPayload(req.body);
+  if (!payload) {
+    return res.status(400).json({
+      error: "roomId, companyId, version, title, and closed/archived status are required"
+    });
+  }
+  const result = recordMeetingSummary(payload);
+  await bus.publish(ZHEvent.MEETING_SUMMARY, payload).catch((error) => {
+    console.warn(`[brain] failed to publish meeting summary event: ${(error as Error).message}`);
+  });
+  res.status(result.duplicate ? 200 : 201).json({
+    ok: true,
+    ...result
+  });
 });
 
 app.post("/api/preflight", (req, res) => {
@@ -540,6 +603,7 @@ app.post("/api/preflight", (req, res) => {
   } as Task;
   const requiredSkills = requiredSkillsForTask(task, agent);
   const recentMemory = memoryStore.recentMemory(agent.id);
+  const meetingGuidance = memoryStore.recentMeetingGuidance({ agentId: agent.id, role: agent.role, taskText });
   const blockerPolicy = [
     "Treat blocked as recovery, not terminal completion.",
     "Diagnose the blocker first, then fix, delegate, request/hire the needed agent, or ask one concrete owner decision.",
@@ -554,6 +618,7 @@ app.post("/api/preflight", (req, res) => {
     role: agent.role,
     requiredSkills,
     recentMemory,
+    meetingGuidance,
     blockerPolicy,
     guidance: [
       "Hermes/Zero-Human preflight:",
@@ -563,7 +628,10 @@ app.post("/api/preflight", (req, res) => {
       ...blockerPolicy.map((line) => `- ${line}`),
       "",
       "Relevant memory:",
-      recentMemory || "- No relevant memory yet."
+      recentMemory || "- No relevant memory yet.",
+      "",
+      "Relevant meeting decisions:",
+      meetingGuidance || "- No relevant meeting guidance yet."
     ].join("\n")
   });
 });

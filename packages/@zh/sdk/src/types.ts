@@ -79,6 +79,27 @@ export interface ZHEnvelope<TPayload = unknown> {
   };
 }
 
+export interface MeetingSummaryMemoryPayload {
+  roomId: string;
+  companyId: string;
+  version: string;
+  title: string;
+  division?: string | null;
+  status: "closed" | "archived";
+  summary?: string | null;
+  decisions: string[];
+  blockers: string[];
+  actionItems: string[];
+  roleNeeds: string[];
+  skillSignals: string[];
+  participantAgentIds: string[];
+  projectId?: string | null;
+  issueId?: string | null;
+  outcome?: Record<string, unknown> | null;
+  closedAt?: string | null;
+  updatedAt: string;
+}
+
 export enum ZHEvent {
   TASK_ASSIGNED = "zh:task:assigned",
   TASK_STARTED = "zh:task:started",
@@ -86,6 +107,7 @@ export enum ZHEvent {
   AGENT_SPAWNED = "zh:agent:spawned",
   AGENT_READY = "zh:agent:ready",
   SKILL_LEARNED = "zh:skill:learned",
+  MEETING_SUMMARY = "zh:meeting:summary",
   QUOTA_EXHAUSTED = "zh:quota:exhausted",
   COST_THRESHOLD = "zh:cost:threshold",
   COST_ACCUMULATED = "zh:cost:accumulated",
