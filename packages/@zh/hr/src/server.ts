@@ -320,6 +320,11 @@ type WorkroomFileChange = {
   path: string;
   status: string;
 };
+type WorkroomArtifact = {
+  type: "document" | "code" | "config" | "asset" | "other";
+  path: string;
+  title: string;
+};
 type WorkroomRun = {
   id: string;
   shortId: string;
@@ -335,11 +340,17 @@ type WorkroomRun = {
   model?: string;
   adapterType?: string;
   invocationSource?: string;
+  repo?: string;
+  commandStatus: string;
+  tokenEstimate: number;
+  rootError?: string;
+  recommendedAction?: string;
   workingDir?: string;
   workspaceReady: boolean;
   terminal: string[];
   fileChanges: WorkroomFileChange[];
   diffStat: string[];
+  artifacts: WorkroomArtifact[];
   gitError?: string;
 };
 type WorkroomState = {
@@ -3796,6 +3807,82 @@ function workingDirFromContext(context: unknown): string | undefined {
   ]);
 }
 
+function repoFromWorkingDir(cwd: string | undefined): string | undefined {
+  if (!cwd) return undefined;
+  const normalized = cwd.replaceAll("\\", "/");
+  const markers = ["/repositories/", "/workspaces/", "/projects/"];
+  for (const marker of markers) {
+    const index = normalized.indexOf(marker);
+    if (index >= 0) {
+      const segment = normalized.slice(index + marker.length).split("/").filter(Boolean)[0];
+      if (segment) return segment;
+    }
+  }
+  return normalized.split("/").filter(Boolean).at(-1);
+}
+
+function tokenEstimateFromText(lines: string[]): number {
+  const joined = lines.join("\n");
+  const matches = joined.matchAll(/(\d[\d,_.]*)\s*(?:input\s+|output\s+|cached\s+|total\s+)?tokens?/gi);
+  let total = 0;
+  for (const match of matches) {
+    const parsed = Number(match[1].replace(/[,_]/g, ""));
+    if (Number.isFinite(parsed)) total += parsed;
+  }
+  return total;
+}
+
+function commandStatusFromTerminal(status: string, lines: string[]): string {
+  if (["queued", "running", "failed", "succeeded", "cancelled"].includes(status)) return status;
+  const recent = [...lines].reverse().find((line) => /executing command|command|result|error|failed|succeeded/i.test(line));
+  return recent?.replace(/^\[[^\]]+\]\s*/, "").slice(0, 140) ?? status;
+}
+
+function rootErrorFromRun(status: string, lines: string[], gitError?: string): string | undefined {
+  if (gitError) return gitError;
+  const errorLine = [...lines].reverse().find((line) => /error|failed|not found|timeout|unauthorized|no active credentials|handshake not finished/i.test(line));
+  if (errorLine) return errorLine.replace(/^\[[^\]]+\]\s*/, "").slice(0, 280);
+  if (["failed", "error", "cancelled"].includes(status)) return `Run ended with status ${status}.`;
+  return undefined;
+}
+
+function recommendedOwnerAction(rootError: string | undefined, status: string, durationSec: number | undefined): string | undefined {
+  const error = (rootError ?? "").toLowerCase();
+  if (error.includes("no active credentials") || error.includes("unauthorized") || error.includes("9router") || error.includes("openai")) {
+    return "Check the active 9Router combo/API key, then rerun the Paperclip task. Keep the agent model set to the configured combo.";
+  }
+  if (error.includes("workspace") || error.includes("not readable") || error.includes("not mounted") || error.includes("not a git")) {
+    return "Verify the Paperclip workspace/repository sync in Zero-Human Studio before rerunning the agent.";
+  }
+  if (["failed", "error"].includes(status)) {
+    return "Open the run transcript, identify the first failing command, then assign a concrete recovery issue to the right role.";
+  }
+  if (status === "running" && (durationSec ?? 0) > 900) {
+    return "Long-running task detected. Check the latest terminal line, ask the assignee for a disposition, or split the work into a child issue.";
+  }
+  return undefined;
+}
+
+function artifactType(pathName: string): WorkroomArtifact["type"] {
+  const lower = pathName.toLowerCase();
+  if (/\.(md|mdx|txt|docx|pdf)$/.test(lower)) return "document";
+  if (/\.(ts|tsx|js|jsx|py|go|rs|kt|java|rb|php|cs|sql)$/.test(lower)) return "code";
+  if (/\.(json|ya?ml|toml|env|ini|conf)$/.test(lower)) return "config";
+  if (/\.(png|jpe?g|webp|gif|svg|mp4|mov)$/.test(lower)) return "asset";
+  return "other";
+}
+
+function artifactsFromChanges(fileChanges: WorkroomFileChange[]): WorkroomArtifact[] {
+  return fileChanges
+    .filter((file) => file.status.includes("A") || file.status.includes("M") || file.status === "??")
+    .slice(0, 20)
+    .map((file) => ({
+      type: artifactType(file.path),
+      path: file.path,
+      title: file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? file.path
+    }));
+}
+
 function parseGitStatus(status: string): WorkroomFileChange[] {
   return status
     .split(/\r?\n/)
@@ -3962,6 +4049,9 @@ async function paperclipWorkroomState(): Promise<WorkroomState> {
           ...arrayFromText(run.stdout_excerpt),
           ...arrayFromText(run.stderr_excerpt).map((line) => `[stderr] ${line}`)
         ].slice(-80);
+        const rootError = rootErrorFromRun(run.status, terminal, git.gitError);
+        const repo = repoFromWorkingDir(workingDir);
+        const tokenEstimate = tokenEstimateFromText(terminal);
         return {
           id: run.id,
           shortId: run.id.slice(0, 8),
@@ -3977,11 +4067,17 @@ async function paperclipWorkroomState(): Promise<WorkroomState> {
           model: modelFromContext(run.context_snapshot),
           adapterType: run.adapter_type ?? pickNestedString(run.context_snapshot, [["adapterType"]]),
           invocationSource: run.invocation_source,
+          repo,
+          commandStatus: commandStatusFromTerminal(run.status, terminal),
+          tokenEstimate,
+          rootError,
+          recommendedAction: recommendedOwnerAction(rootError, run.status, durationSec),
           workingDir,
           workspaceReady: git.workspaceReady,
           terminal,
           fileChanges: git.fileChanges,
           diffStat: git.diffStat,
+          artifacts: artifactsFromChanges(git.fileChanges),
           gitError: git.gitError
         } satisfies WorkroomRun;
       })
@@ -4474,6 +4570,39 @@ app.post("/api/agent-issues/evaluate", (req, res) => {
 
 app.get("/api/workroom", async (_req, res) => {
   res.json(await paperclipWorkroomState());
+});
+
+app.get("/api/workroom/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  sendOwnerStateEvent(res, "connected", {
+    kind: "connected",
+    emittedAt: new Date().toISOString()
+  });
+
+  const sendWorkroom = async () => {
+    try {
+      sendOwnerStateEvent(res, "workroom", {
+        kind: "workroom",
+        emittedAt: new Date().toISOString(),
+        workroom: await paperclipWorkroomState()
+      });
+    } catch (error) {
+      sendOwnerStateEvent(res, "stream-error", {
+        kind: "error",
+        emittedAt: new Date().toISOString(),
+        error: (error as Error).message
+      });
+    }
+  };
+  await sendWorkroom();
+  const interval = setInterval(sendWorkroom, 5000);
+  if (typeof interval === "object" && "unref" in interval && typeof interval.unref === "function") {
+    interval.unref();
+  }
+  req.on("close", () => clearInterval(interval));
 });
 
 async function buildOwnerStateSnapshot() {

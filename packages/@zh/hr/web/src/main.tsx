@@ -279,11 +279,17 @@ type WorkroomRun = {
   model?: string;
   adapterType?: string;
   invocationSource?: string;
+  repo?: string;
+  commandStatus: string;
+  tokenEstimate: number;
+  rootError?: string;
+  recommendedAction?: string;
   workingDir?: string;
   workspaceReady: boolean;
   terminal: string[];
   fileChanges: Array<{ path: string; status: string }>;
   diffStat: string[];
+  artifacts: Array<{ type: "document" | "code" | "config" | "asset" | "other"; path: string; title: string }>;
   gitError?: string;
 };
 type WorkroomState = {
@@ -510,10 +516,10 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
   },
   {
     id: "workroom",
-    label: "Workroom",
-    eyebrow: "Codex monitor",
-    title: "Codex Workroom",
-    description: "Watch Paperclip/Codex runs, terminal output, workspace paths, and files changed by agents.",
+    label: "Execution",
+    eyebrow: "Live monitor",
+    title: "Execution Monitor",
+    description: "Inspect Paperclip/Codex runs, terminal output, workspace paths, errors, artifacts, and files changed by agents.",
     icon: <TerminalSquare size={19} />
   }
 ];
@@ -528,6 +534,12 @@ function App() {
   });
   const [activeView, setActiveView] = useState<ViewId>("operations");
   const [selectedWorkroomRunId, setSelectedWorkroomRunId] = useState("");
+  const [workroomFilters, setWorkroomFilters] = useState({
+    query: "",
+    agent: "all",
+    status: "all",
+    flag: "all"
+  });
   const [selectedAgent, setSelectedAgent] = useState("cto");
   const [description, setDescription] = useState("Create an architecture plan for the authentication module.");
   const [type, setType] = useState("architecture");
@@ -699,9 +711,29 @@ function App() {
   }, []);
 
   useEffect(() => {
-    refreshWorkroom();
-    const interval = window.setInterval(refreshWorkroom, 8000);
-    return () => window.clearInterval(interval);
+    let closed = false;
+    let lastSeen = Date.now();
+    let source: EventSource | null = null;
+    refreshWorkroom().catch(() => undefined);
+    if ("EventSource" in window) {
+      source = new EventSource("/api/workroom/stream");
+      source.addEventListener("workroom", (event) => {
+        lastSeen = Date.now();
+        const payload = JSON.parse((event as MessageEvent).data) as { workroom?: WorkroomState };
+        if (payload.workroom) setWorkroom(payload.workroom);
+      });
+      source.onerror = () => {
+        if (!closed && Date.now() - lastSeen > 15000) void refreshWorkroom().catch(() => undefined);
+      };
+    }
+    const interval = window.setInterval(() => {
+      if (Date.now() - lastSeen > 15000) void refreshWorkroom().catch(() => undefined);
+    }, 12000);
+    return () => {
+      closed = true;
+      source?.close();
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -738,7 +770,38 @@ function App() {
     const haystack = [item.name, item.description, item.category, ...(item.tags ?? []), item.packageName].join(" ").toLowerCase();
     return haystack.includes(mcpQuery.toLowerCase());
   });
-  const selectedWorkroomRun = workroom.runs.find((run) => run.id === selectedWorkroomRunId) ?? workroom.runs[0];
+  const workroomAgents = Array.from(new Set(workroom.runs.map((run) => run.agentName).filter(Boolean))).sort();
+  const workroomStatuses = Array.from(new Set(workroom.runs.map((run) => run.status).filter(Boolean))).sort();
+  const filteredWorkroomRuns = workroom.runs.filter((run) => {
+    const query = workroomFilters.query.trim().toLowerCase();
+    const haystack = [
+      run.agentName,
+      run.agentRole,
+      run.issueKey,
+      run.issueTitle,
+      run.repo,
+      run.workingDir,
+      run.model,
+      run.commandStatus,
+      run.rootError
+    ].join(" ").toLowerCase();
+    const matchesQuery = !query || haystack.includes(query);
+    const matchesAgent = workroomFilters.agent === "all" || run.agentName === workroomFilters.agent;
+    const matchesStatus = workroomFilters.status === "all" || run.status === workroomFilters.status;
+    const isLongRunning = ["running", "queued"].includes(run.status) && (run.durationSec ?? 0) > 900;
+    const matchesFlag =
+      workroomFilters.flag === "all" ||
+      (workroomFilters.flag === "failed" && ["failed", "error", "cancelled"].includes(run.status)) ||
+      (workroomFilters.flag === "long" && isLongRunning) ||
+      (workroomFilters.flag === "high-token" && run.tokenEstimate >= 50000) ||
+      (workroomFilters.flag === "changed" && run.fileChanges.length > 0);
+    return matchesQuery && matchesAgent && matchesStatus && matchesFlag;
+  });
+  const selectedWorkroomRun =
+    filteredWorkroomRuns.find((run) => run.id === selectedWorkroomRunId) ??
+    workroom.runs.find((run) => run.id === selectedWorkroomRunId) ??
+    filteredWorkroomRuns[0] ??
+    workroom.runs[0];
 
   useEffect(() => {
     if (!workRepositories.some((repo) => repo.id === repositoryId)) {
@@ -1254,15 +1317,49 @@ function App() {
           <div className="panel workroomRuns">
             <div className="panelHead">
               <div>
-                <h2>Live Codex runs</h2>
-                <p>{workroom.unavailable ? workroom.error ?? "Paperclip data unavailable." : `${workroom.activeRuns} active runs - ${workroom.changedFiles} changed files detected`}</p>
+                <h2>Paperclip execution runs</h2>
+                <p>{workroom.unavailable ? workroom.error ?? "Paperclip data unavailable." : `${workroom.activeRuns} active runs - ${workroom.changedFiles} changed files - ${filteredWorkroomRuns.length}/${workroom.runs.length} shown`}</p>
               </div>
               <button onClick={refreshWorkroom}>
                 <RefreshCw size={15} /> Refresh
               </button>
             </div>
+            <div className="workroomFilters">
+              <label>
+                Search
+                <input
+                  value={workroomFilters.query}
+                  placeholder="agent, issue, repo, error"
+                  onChange={(event) => setWorkroomFilters((current) => ({ ...current, query: event.target.value }))}
+                />
+              </label>
+              <label>
+                Agent
+                <select value={workroomFilters.agent} onChange={(event) => setWorkroomFilters((current) => ({ ...current, agent: event.target.value }))}>
+                  <option value="all">All agents</option>
+                  {workroomAgents.map((agent) => <option value={agent} key={agent}>{agent}</option>)}
+                </select>
+              </label>
+              <label>
+                Status
+                <select value={workroomFilters.status} onChange={(event) => setWorkroomFilters((current) => ({ ...current, status: event.target.value }))}>
+                  <option value="all">All statuses</option>
+                  {workroomStatuses.map((status) => <option value={status} key={status}>{status}</option>)}
+                </select>
+              </label>
+              <label>
+                Flag
+                <select value={workroomFilters.flag} onChange={(event) => setWorkroomFilters((current) => ({ ...current, flag: event.target.value }))}>
+                  <option value="all">All runs</option>
+                  <option value="failed">Failed</option>
+                  <option value="long">Long running</option>
+                  <option value="high-token">High token</option>
+                  <option value="changed">Has changes</option>
+                </select>
+              </label>
+            </div>
             <div className="workroomList">
-              {workroom.runs.map((run) => (
+              {filteredWorkroomRuns.map((run) => (
                 <button
                   className={`workroomRun ${run.status} ${selectedWorkroomRun?.id === run.id ? "active" : ""}`}
                   key={run.id}
@@ -1277,9 +1374,11 @@ function App() {
                     <small>{run.durationSec ?? 0}s</small>
                   </span>
                   <em>{run.issueKey ? `${run.issueKey} - ${run.issueTitle ?? "Untitled issue"}` : run.invocationSource ?? "heartbeat"}</em>
+                  <small>{run.repo ?? "repo unknown"} - {run.model ?? "model unknown"}</small>
                 </button>
               ))}
               {!workroom.runs.length && <div className="empty">No Paperclip/Codex runs observed yet.</div>}
+              {workroom.runs.length > 0 && filteredWorkroomRuns.length === 0 && <div className="empty">No runs match the current filters.</div>}
             </div>
           </div>
           )}
@@ -1299,7 +1398,29 @@ function App() {
                   <span><strong>Agent</strong>{selectedWorkroomRun.agentName}</span>
                   <span><strong>Model</strong>{selectedWorkroomRun.model ?? "unknown"}</span>
                   <span><strong>Adapter</strong>{selectedWorkroomRun.adapterType ?? "unknown"}</span>
+                  <span><strong>Issue</strong>{selectedWorkroomRun.issueKey ?? "none"}</span>
+                  <span><strong>Repo</strong>{selectedWorkroomRun.repo ?? "unknown"}</span>
+                  <span><strong>Command</strong>{selectedWorkroomRun.commandStatus}</span>
+                  <span><strong>Duration</strong>{selectedWorkroomRun.durationSec ?? 0}s</span>
+                  <span><strong>Tokens</strong>{selectedWorkroomRun.tokenEstimate ? selectedWorkroomRun.tokenEstimate.toLocaleString() : "not reported"}</span>
+                  <span><strong>Workspace</strong>{selectedWorkroomRun.workspaceReady ? "ready" : "unavailable"}</span>
                 </div>
+                {(selectedWorkroomRun.rootError || selectedWorkroomRun.recommendedAction) && (
+                  <div className="triageBox">
+                    {selectedWorkroomRun.rootError && (
+                      <div>
+                        <strong>Root error</strong>
+                        <p>{selectedWorkroomRun.rootError}</p>
+                      </div>
+                    )}
+                    {selectedWorkroomRun.recommendedAction && (
+                      <div>
+                        <strong>Recommended owner action</strong>
+                        <p>{selectedWorkroomRun.recommendedAction}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <pre className="terminalPane">{selectedWorkroomRun.terminal.length ? selectedWorkroomRun.terminal.join("\n") : "No terminal output captured yet."}</pre>
               </>
             ) : (
@@ -1329,6 +1450,33 @@ function App() {
                 <div className="empty">No uncommitted file changes detected.</div>
               )}
               {!selectedWorkroomRun && <div className="empty">Select a run to see file changes.</div>}
+            </div>
+          </div>
+          )}
+
+          {activeView === "workroom" && (
+          <div className="panel workroomArtifacts">
+            <div className="panelHead">
+              <div>
+                <h2>Generated artifacts</h2>
+                <p>Documents, code, configs, and assets inferred from recorded file changes.</p>
+              </div>
+              <Save size={20} />
+            </div>
+            <div className="artifactList">
+              {(selectedWorkroomRun?.artifacts ?? []).map((artifact) => (
+                <article className="artifactItem" key={`${artifact.type}-${artifact.path}`}>
+                  <Status value={artifact.type} />
+                  <div>
+                    <strong>{artifact.title}</strong>
+                    <code>{artifact.path}</code>
+                  </div>
+                </article>
+              ))}
+              {selectedWorkroomRun && !selectedWorkroomRun.artifacts.length && (
+                <div className="empty">No generated artifacts detected for this run yet.</div>
+              )}
+              {!selectedWorkroomRun && <div className="empty">Select a run to see artifacts.</div>}
             </div>
           </div>
           )}

@@ -1054,8 +1054,31 @@ textarea {
 .workroomRuns,
 .workroomTerminal,
 .workroomFiles,
+.workroomArtifacts,
 .workroomDiff {
   min-width: 0;
+}
+.workroomFilters {
+  display: grid;
+  grid-template-columns: 1.3fr repeat(3, minmax(120px, .7fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.workroomFilters label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.workroomFilters input,
+.workroomFilters select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111514;
+  color: var(--text);
+  padding: 9px 10px;
+  min-height: 38px;
 }
 .workroomList {
   display: grid;
@@ -1123,6 +1146,30 @@ textarea {
   font-size: 12px;
   margin-bottom: 4px;
 }
+.triageBox {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.triageBox div {
+  border: 1px solid rgba(255, 190, 90, .45);
+  background: rgba(50, 35, 12, .55);
+  border-radius: 8px;
+  padding: 10px;
+}
+.triageBox strong {
+  color: #ffd483;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+.triageBox p {
+  margin: 0;
+  color: #ead8ab;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .terminalPane {
   margin: 0;
   min-height: 260px;
@@ -1179,6 +1226,30 @@ textarea {
   overflow-wrap: anywhere;
   font-size: 12px;
 }
+.artifactList {
+  display: grid;
+  gap: 8px;
+}
+.artifactItem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 10px;
+}
+.artifactItem strong,
+.artifactItem code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.artifactItem code {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
 
 @media (max-width: 980px) {
   .shell { grid-template-columns: 1fr; }
@@ -1198,6 +1269,8 @@ textarea {
   .issuePolicyTester { grid-template-columns: 1fr; }
   .mcpSummary, .mcpCardFooter, .mcpActions { align-items: flex-start; justify-content: flex-start; flex-direction: column; }
   .runMeta,
+  .triageBox,
+  .workroomFilters,
   .workroomRun {
     grid-template-columns: 1fr;
   }

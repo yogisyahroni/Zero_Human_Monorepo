@@ -9,7 +9,7 @@
 
 ## Implementation Status
 
-Last updated: 2026-05-11
+Last updated: 2026-05-12
 
 | Task | Status | Notes |
 |------|--------|-------|
@@ -30,7 +30,7 @@ Last updated: 2026-05-11
 | TASK-15 | Done | Meeting outcomes now enforce dispositions, accept decisions, create child issues, and request hires through Paperclip. |
 | TASK-16 | Done | Hermes stores meeting summaries and role learnings as memory/guidance. |
 | TASK-17 | Done | Zero-Human Studio Owner Dashboard now uses SSE realtime state, live/stale indicators, company activity timeline, and low-frequency fallback polling. |
-| TASK-18 | Planned | Zero-Human Studio exposes live execution monitoring for Paperclip/Codex runs. |
+| TASK-18 | Done | Execution Monitor streams Paperclip/Codex runs with filters, transcript, root error, owner action, artifacts, changed files, and diff summary. |
 | TASK-19 | Planned | Org hierarchy and Paperclip sync semantics are canonical and idempotent. |
 | TASK-20 | Planned | Skills and MCP tools are assigned automatically to hired agents. |
 | TASK-21 | Planned | Meeting, blocker, retry, and token-cost guardrails prevent loops. |
@@ -40,7 +40,7 @@ Last updated: 2026-05-11
 
 ## Verification Snapshot
 
-Last verified: 2026-05-11
+Last verified: 2026-05-12
 
 | Task | Verification evidence |
 |------|-----------------------|
@@ -61,8 +61,9 @@ Last verified: 2026-05-11
 | TASK-15 | Paperclip Meeting Room outcomes passed shared, server, and UI typechecks; close disposition guard, decision acceptance, action-item issue creation, and hiring request APIs/UI are implemented. |
 | TASK-16 | Brain memory store tests cover meeting summary dedupe and guidance recall; Paperclip server and Brain typechecks validate the Hermes meeting-memory bridge. |
 | TASK-17 | HR server and UI typechecks validate owner dashboard SSE streaming, live/stale badges, company activity events, and reduced polling fallback. |
+| TASK-18 | HR server and UI typechecks validate Workroom/Execution Monitor metadata, SSE streaming, filters, triage guidance, generated artifacts, file changes, and diff visibility. |
 
-Foundational hardening is complete. TASK-17 is complete; the next open implementation phase is TASK-18 through TASK-22.
+Foundational hardening is complete. TASK-18 is complete; the next open implementation phase is TASK-19 through TASK-22.
 
 ---
 
@@ -88,7 +89,7 @@ Execution order:
 | TASK-15 | Meeting Rooms | Paperclip automation | P0 | Done |
 | TASK-16 | Hermes Brain | Hermes/Paperclip bridge | P0 | Done |
 | TASK-17 | Owner Dashboard | Zero-Human Studio | P0 | Done |
-| TASK-18 | Execution Monitor | Zero-Human Studio | P1 | Planned |
+| TASK-18 | Execution Monitor | Zero-Human Studio | P1 | Done |
 | TASK-19 | Organization Sync | Zero-Human Studio + Paperclip | P0 | Planned |
 | TASK-20 | Skills/MCP Automation | Zero-Human Studio + Paperclip | P0 | Planned |
 | TASK-21 | Reliability/Cost | Paperclip + Hermes + 9Router | P1 | Planned |
