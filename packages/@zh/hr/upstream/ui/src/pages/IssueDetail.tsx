@@ -74,6 +74,7 @@ import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { IssueMeetingRoomsPanel } from "./MeetingRooms";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -3723,6 +3724,8 @@ export function IssueDetail() {
         project={resolvedProject}
         onUpdate={(data) => updateIssue.mutate(data)}
       />
+
+      <IssueMeetingRoomsPanel companyId={issue.companyId} issueId={issue.id} />
 
       <Separator />
 

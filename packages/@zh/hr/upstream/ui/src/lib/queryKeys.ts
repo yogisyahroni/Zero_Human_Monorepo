@@ -68,6 +68,14 @@ export const queryKeys = {
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
   },
+  meetingRooms: {
+    list: (companyId: string, filters?: Record<string, string | undefined>) =>
+      ["meeting-rooms", companyId, filters ?? {}] as const,
+    detail: (companyId: string, roomId: string) =>
+      ["meeting-rooms", companyId, roomId] as const,
+    issueLinks: (companyId: string, issueId: string) =>
+      ["meeting-rooms", companyId, "issue", issueId] as const,
+  },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
       ["routines", companyId, filters?.projectId ?? "__all-projects__"] as const,

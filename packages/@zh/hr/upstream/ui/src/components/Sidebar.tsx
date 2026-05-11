@@ -12,6 +12,7 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  MessagesSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -102,6 +103,7 @@ export function Sidebar() {
           <SidebarNavItem to="/search" label="Search" icon={Search} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/meetings" label="Meetings" icon={MessagesSquare} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}

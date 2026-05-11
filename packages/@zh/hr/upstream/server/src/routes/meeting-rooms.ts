@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -65,14 +65,34 @@ export function meetingRoomRoutes(db: Db) {
       typeof req.query.projectId === "string" ? eq(meetingRooms.projectId, req.query.projectId) : undefined,
     ].filter(Boolean);
 
-    const rooms = await db
+    const [rooms, participantCounts] = await Promise.all([
+      db
       .select()
       .from(meetingRooms)
       .where(and(...filters))
       .orderBy(desc(meetingRooms.createdAt))
-      .limit(100);
+        .limit(100),
+      db
+        .select({
+          meetingRoomId: meetingRoomParticipants.meetingRoomId,
+          participantCount: count(),
+        })
+        .from(meetingRoomParticipants)
+        .where(eq(meetingRoomParticipants.companyId, companyId))
+        .groupBy(meetingRoomParticipants.meetingRoomId),
+    ]);
 
-    res.json({ rooms });
+    const countsByRoomId = new Map(
+      participantCounts.map((row) => [row.meetingRoomId, Number(row.participantCount)]),
+    );
+
+    res.json({
+      rooms: rooms.map((room) => ({
+        ...room,
+        participantCount: countsByRoomId.get(room.id) ?? 0,
+        unreadCount: 0,
+      })),
+    });
   });
 
   router.post("/companies/:companyId/meeting-rooms", validate(createMeetingRoomSchema), async (req, res) => {

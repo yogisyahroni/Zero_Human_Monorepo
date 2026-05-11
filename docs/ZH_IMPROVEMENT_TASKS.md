@@ -26,7 +26,7 @@ Last updated: 2026-05-11
 | TASK-10 | Done | `CHANGELOG.md` and repository metadata were added. |
 | TASK-11 | Done | Root `Makefile` provides unified local entry points. |
 | TASK-13 | Done | Paperclip Meeting Room DB schema, migration, validators, lifecycle, and API contracts were added. |
-| TASK-14 | Planned | Paperclip Meeting Room UI with transcript, agenda, decisions, and outcomes. |
+| TASK-14 | Done | Paperclip Meeting Room UI now exposes list/detail views, filters, outcomes, participants, artifacts, and issue links. |
 | TASK-15 | Planned | Meeting outcomes can create decisions, action items, and child issues. |
 | TASK-16 | Planned | Hermes stores meeting summaries and role learnings as memory/guidance. |
 | TASK-17 | Planned | Zero-Human Studio Owner Dashboard updates realtime. |
@@ -57,8 +57,9 @@ Last verified: 2026-05-11
 | TASK-11 | Root `Makefile` provides canonical `up`, `down`, `logs`, `build`, and `test` commands. |
 | TASK-12 | Hermes is documented and configured as internal memory/guidance context; execution remains owned by Zero-Human/Paperclip adapters. |
 | TASK-13 | Paperclip Meeting Room persistence and API contracts passed shared, db, and server typechecks. |
+| TASK-14 | Paperclip Meeting Room UI passed UI and server typechecks; issue detail now links related meeting rooms. |
 
-Foundational hardening is complete. TASK-13 is complete; the next open implementation phase is TASK-14 through TASK-22.
+Foundational hardening is complete. TASK-14 is complete; the next open implementation phase is TASK-15 through TASK-22.
 
 ---
 
@@ -80,7 +81,7 @@ Execution order:
 | Task | Area | Primary Surface | Priority | Status |
 |------|------|-----------------|----------|--------|
 | TASK-13 | Meeting Rooms | Paperclip API + data model | P0 | Done |
-| TASK-14 | Meeting Rooms | Paperclip UI | P0 | Planned |
+| TASK-14 | Meeting Rooms | Paperclip UI | P0 | Done |
 | TASK-15 | Meeting Rooms | Paperclip automation | P0 | Planned |
 | TASK-16 | Hermes Brain | Hermes/Paperclip bridge | P0 | Planned |
 | TASK-17 | Owner Dashboard | Zero-Human Studio | P0 | Planned |
