@@ -2,7 +2,7 @@ name: Staging
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
   pull_request:
 
 permissions:
