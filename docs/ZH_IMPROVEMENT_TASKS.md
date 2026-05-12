@@ -4,6 +4,9 @@
 > Berdasarkan full code review: PRD, REMAINING_TASKS, package.json, docker-compose.yml, Dockerfile
 > Updated: tambah TASK-12 (Hermes boundary) berdasarkan analisa arsitektur overlap Hermes vs Paperclip
 > Updated: tambah TASK-13..TASK-22 untuk Meeting Room, realtime Owner Dashboard, dan orkestrasi perusahaan end-to-end
+> Updated: P0 monitoring boundary — Paperclip owns company controls; Zero-Human Studio is monitoring/observability only by default
+> Updated: P1 monitoring diagnostics — Studio now explains Paperclip company/env/data wiring issues without taking control actions
+> Updated: P2 Hermes/9Router observability — Studio now exposes per-agent Hermes brain state and 9Router routing health
 
 ---
 
@@ -34,7 +37,10 @@ Last updated: 2026-05-12
 | TASK-19 | Done | Paperclip bridge now applies canonical reporting, detects duplicate roles, and keeps hiring authority in Paperclip. |
 | TASK-20 | Done | Role skills, imported registry skills, and mandatory Sequential Thinking MCP are auto-selected for Paperclip agents. |
 | TASK-21 | Done | Hermes guardrails now bound meeting/blocker/retry loops, detect high-cost runs, notify the owner, and preserve configurable 9Router combo routing. |
-| TASK-22 | Done | Zero-Human Studio Owner Command now shows running work, blockers, decisions, repositories, cost, memory, deep links, and guardrail scan state. |
+| TASK-22 | Done | Zero-Human Studio Owner Monitor now shows running work, blockers, decisions, repositories, cost, memory, deep links, and guardrail scan state without owning Paperclip controls. |
+| P0-MONITORING-BOUNDARY | Done | Zero-Human mutating endpoints are disabled by default; Paperclip remains the control plane, Hermes remains live brain/memory learner, and Studio exposes company/runtime monitoring only. |
+| P1-MONITORING-DIAGNOSTICS | Done | Zero-Human Studio now exposes monitoring-only diagnostics for Paperclip company selection, empty datasets, env/database mismatch, duplicate companies, live runs, and deep links. |
+| P2-HERMES-ROUTER-OBSERVABILITY | Done | Zero-Human Studio now shows Hermes memory injected per agent, assigned skills/MCP, learned/failed outcomes, role confidence/relevance, active 9Router combo, model distribution, provider fallback/failures, and token/cost spike guardrails. |
 
 ---
 
@@ -65,9 +71,12 @@ Last verified: 2026-05-12
 | TASK-19 | HR server typecheck validates canonical Paperclip hierarchy patching, duplicate role reporting, and idempotent bridge sync semantics. |
 | TASK-20 | HR server and UI typechecks validate automatic registry skill matching, mandatory Sequential Thinking MCP display, and Paperclip adapter skill/MCP sync. |
 | TASK-21 | HR server and UI typechecks validate Hermes blocker/meeting/cost guardrails, cooldown state, 9Router combo policy, and owner alerts. |
-| TASK-22 | HR server and UI typechecks validate the Owner Command dashboard, deep links, attention queue, and guardrail control surface. |
+| TASK-22 | HR server and UI typechecks validate the Owner Monitor dashboard, deep links, attention queue, and guardrail monitoring surface. |
+| P0-MONITORING-BOUNDARY | HR server and UI typechecks validate monitoring-only Studio behavior; hidden UI actions are also guarded by backend 403 responses unless `ZH_ENABLE_ZERO_HUMAN_CONTROLS=true`. |
+| P1-MONITORING-DIAGNOSTICS | HR server and UI typechecks validate Paperclip runtime diagnostics in `/api/state`, SSE owner state, and Studio diagnostic cards. |
+| P2-HERMES-ROUTER-OBSERVABILITY | HR server and UI typechecks validate Hermes per-agent brain panels and 9Router health monitoring in `/api/state`, including role confidence, memory/skill/MCP status, model distribution, provider fallback, failed providers, and spike guardrails. |
 
-Foundational hardening is complete. TASK-21 and TASK-22 are complete; the next open phase is future owner hardening/backlog.
+Foundational hardening is complete. TASK-21, TASK-22, P0, P1, and P2 are complete; the next open phase is future owner hardening/backlog.
 
 ---
 
@@ -75,7 +84,7 @@ Foundational hardening is complete. TASK-21 and TASK-22 are complete; the next o
 
 Last added: 2026-05-11
 
-Design principle: Zero-Human Studio is the owner/control plane. Paperclip is the company execution board. Hermes is the live brain and memory/guidance layer. 9Router remains only the AI gateway and must not be hardcoded around.
+Design principle: Paperclip is the company control plane and execution board. Zero-Human Studio is monitoring/observability only. Hermes is the live brain and memory/guidance learner. 9Router remains only the AI gateway and must not be hardcoded around.
 
 Execution order:
 
@@ -84,7 +93,7 @@ Execution order:
 3. TASK-15 turns meeting outcomes into decisions, artifacts, and executable child issues.
 4. TASK-16 makes Hermes remember meeting outcomes without becoming the executor.
 5. TASK-17 and TASK-18 make Zero-Human Studio realtime and observable for the owner.
-6. TASK-19 through TASK-22 clean up org sync, skills/MCP, loop control, and weak Studio surfaces.
+6. TASK-19 through TASK-22 clean up org sync, skills/MCP, loop guardrails, and weak Studio monitoring surfaces.
 
 | Task | Area | Primary Surface | Priority | Status |
 |------|------|-----------------|----------|--------|
@@ -312,7 +321,7 @@ Acceptance criteria:
 - Studio becomes the main command dashboard, not only a passive status page.
 
 Completion notes:
-- Operations now has an Owner Command panel that answers what is running, blocked, waiting on decisions, changed in repositories, stored in memory, and spent in 9Router.
+- Operations now has an Owner Monitor panel that answers what is running, blocked, waiting on decisions, changed in repositories, stored in memory, and spent in 9Router.
 - Studio exposes direct links to Paperclip, Hermes logs, and 9Router usage from the command surface.
 - Hermes Guardrails panel shows issue scans, meeting flags, high-cost flags, cooldowns, combo policy, and the latest intervention reasons.
 - Empty states now point the owner toward dispatching work, scanning guardrails, or reviewing attention items.
@@ -592,8 +601,8 @@ Ada overlap fungsi antara Hermes dan Paperclip — keduanya dirancang sebagai "a
 |---------|-------|-------|
 | `hermes` | Persistent Memory Storage | Internal only |
 | `paperclip` | Git Worktree + Task Queue Storage | Internal only |
-| `zh-brain-adapter` | Satu-satunya Decision Maker & Executor Spawner | Internal only |
-| `zero-human` | Control Plane UI | Exposed ke host `:3003` |
+| `zh-brain-adapter` | Internal adapter untuk Hermes memory/guidance dan runtime telemetry | Internal only |
+| `zero-human` | Monitoring/Observability UI | Exposed ke host `:3003` |
 
 **Action:**
 
@@ -624,7 +633,7 @@ Ganti dengan tabel yang jelas:
 
 | URL | Service | Who should access |
 |-----|---------|-------------------|
-| http://localhost:3003 | Zero-Human Control Plane | User (you) |
+| http://localhost:3003 | Zero-Human Studio Monitor | User (you) |
 | http://localhost:20128 | 9Router AI Gateway | Developer (provider setup) |
 | http://localhost:3100 | Paperclip Upstream | Internal — tidak perlu dibuka langsung |
 
@@ -1082,7 +1091,7 @@ Developer baru bisa paham full architecture hanya dari baca file ini, tanpa haru
    - Persistent brain memory via brain-memory volume
    - Budget alerts, webhook notifications, agent pause/resume UI
    - GitHub Actions upstream sync workflow (weekly, dry-run mode)
-   - Zero-Human control plane dashboard di :3003
+   - Zero-Human monitoring dashboard di :3003
    ```
 2. Update GitHub repo settings:
    - **Description:** `Autonomous AI Company OS — unifies 9Router, Hermes, and Paperclip into a self-operating dev team via Docker`

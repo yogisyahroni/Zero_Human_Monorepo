@@ -279,6 +279,65 @@ type PaperclipHermesInterventionReport = {
   createdAt: string;
 };
 
+type HermesAgentMemoryPanel = {
+  agentId: string;
+  role: string;
+  executor: string;
+  modelCombo: string;
+  memoryInjected: boolean;
+  memoryNoteCount: number;
+  recentMemory: Array<{ agentId: string; note: string }>;
+  skillsAssigned: string[];
+  mcpAssigned: Array<{ id: string; name: string; status: string; mandatory: boolean }>;
+  learnedOutcomes: number;
+  failedLearning: number;
+  confidence: number;
+  relevance: number;
+  status: "ready" | "partial" | "missing";
+  lastLearnedAt?: string;
+};
+
+type RouterMonitor = {
+  ok: boolean;
+  activeCombo: string;
+  configuredCombos: string[];
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  modelDistribution: Array<{
+    combo: string;
+    provider: string;
+    model: string;
+    active: boolean;
+    configured: boolean;
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }>;
+  providerFallbacks: Array<{
+    provider: string;
+    requests: number;
+    fallbackCount: number;
+    failureCount: number;
+    status: "ok" | "fallback" | "failed" | "idle";
+    lastModel?: string;
+  }>;
+  failedProviders: Array<{ provider: string; failures: number; reason: string }>;
+  spikeGuardrail: {
+    status: "ok" | "warning" | "critical";
+    reason: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+    highCostRuns: number;
+    thresholdTokens: number;
+    thresholdCostUsd: number;
+  };
+  updatedAt: string;
+};
+
 type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
 type AgentIssuePolicy = {
   role: string;
@@ -331,12 +390,67 @@ type WorkroomRun = {
 type WorkroomState = {
   ok: boolean;
   companyId?: string;
+  company?: PaperclipCompanyMonitor;
   updatedAt: string;
   activeRuns: number;
   changedFiles: number;
   unavailable: boolean;
   error?: string;
   runs: WorkroomRun[];
+};
+
+type PaperclipCompanySummary = {
+  id: string;
+  issuePrefix: string;
+  name: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  agentCount: number;
+  activeAgentCount: number;
+  issueCount: number;
+  openIssueCount: number;
+  runCount: number;
+  activeRunCount: number;
+};
+
+type PaperclipCompanyMonitor = {
+  ok: boolean;
+  paperclipUrl: string;
+  source: "env" | "latest" | "fallback" | "unavailable";
+  selectedCompanyId?: string;
+  selectedIssuePrefix?: string;
+  selectedName?: string;
+  warning?: string;
+  error?: string;
+  duplicateNameWarnings: string[];
+  companies: PaperclipCompanySummary[];
+};
+
+type MonitoringDiagnosticItem = {
+  id: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  detail: string;
+  action?: string;
+  href?: string;
+};
+
+type MonitoringDiagnostics = {
+  ok: boolean;
+  mode: "monitoring_only" | "controls_enabled";
+  generatedAt: string;
+  selectedCompanyId?: string;
+  selectedIssuePrefix?: string;
+  selectedName?: string;
+  items: MonitoringDiagnosticItem[];
+  links: {
+    paperclipDashboard: string;
+    paperclipOrg: string;
+    paperclipIssues: string;
+    routerUsage: string;
+    hermesLogs: string;
+  };
 };
 
 type RealtimeState = {
@@ -392,6 +506,10 @@ type State = {
     recentNotes: Array<{ agentId: string; note: string }>;
     error?: string;
   };
+  paperclipCompany: PaperclipCompanyMonitor;
+  monitoringDiagnostics: MonitoringDiagnostics;
+  hermesAgentMemory: HermesAgentMemoryPanel[];
+  routerMonitor: RouterMonitor;
   upstreams: Array<{
     name: string;
     displayName: string;
@@ -447,6 +565,50 @@ const fallbackState: State = {
   skillProgress: [],
   serviceHealth: [],
   brainMemory: { ok: false, agentCount: 0, entries: 0, outcomes: 0, skills: [], recentNotes: [] },
+  paperclipCompany: {
+    ok: false,
+    paperclipUrl: "",
+    source: "unavailable",
+    duplicateNameWarnings: [],
+    companies: []
+  },
+  monitoringDiagnostics: {
+    ok: false,
+    mode: "monitoring_only",
+    generatedAt: "",
+    items: [],
+    links: {
+      paperclipDashboard: "http://localhost:3100/dashboard",
+      paperclipOrg: "http://localhost:3100/org",
+      paperclipIssues: "http://localhost:3100/issues",
+      routerUsage: "http://localhost:20128/dashboard/usage",
+      hermesLogs: "http://localhost:9119/logs"
+    }
+  },
+  hermesAgentMemory: [],
+  routerMonitor: {
+    ok: false,
+    activeCombo: "",
+    configuredCombos: [],
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    modelDistribution: [],
+    providerFallbacks: [],
+    failedProviders: [],
+    spikeGuardrail: {
+      status: "ok",
+      reason: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      highCostRuns: 0,
+      thresholdTokens: 0,
+      thresholdCostUsd: 0
+    },
+    updatedAt: ""
+  },
   upstreams: [],
   repositories: [],
   paperclipSync: { paperclipUrl: "", updatedAt: "", records: [] },
@@ -533,9 +695,9 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
   {
     id: "operations",
     label: "Operations",
-    eyebrow: "Command center",
-    title: "Operations board",
-    description: "Track budget gates, active task worktrees, review state, and live execution events.",
+    eyebrow: "Owner observability",
+    title: "Owner dashboard",
+    description: "Monitor Paperclip company health, decisions, blockers, cost, repositories, and execution links.",
     icon: <Activity size={19} />
   },
   {
@@ -543,7 +705,7 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
     label: "Agents",
     eyebrow: "Workforce",
     title: "Agent bench",
-    description: "Hire operators, choose a repository, and dispatch coding work into isolated worktrees.",
+    description: "Monitor Paperclip workforce, role drift, skills, MCP readiness, and hiring signals. Hiring happens in Paperclip.",
     icon: <Users size={19} />
   },
   {
@@ -558,16 +720,16 @@ const views: Array<{ id: ViewId; label: string; eyebrow: string; title: string; 
     id: "gateway",
     label: "Gateway",
     eyebrow: "AI routing",
-    title: "9Router gateway",
-    description: "Manage repository intake, inspect service health, upstream code, and model combo routing.",
+    title: "9Router gateway monitor",
+    description: "Observe repository and workspace readiness, service health, upstream code, and model combo routing.",
     icon: <RadioTower size={19} />
   },
   {
     id: "mcp",
     label: "MCP",
     eyebrow: "Tool marketplace",
-    title: "MCP control plane",
-    description: "Install Model Context Protocol servers, manage JSON config, and assign tools to company roles.",
+    title: "MCP monitor",
+    description: "Inspect installed MCP servers and role mapping. Paperclip receives the execution guidance.",
     icon: <PackageSearch size={19} />
   },
   {
@@ -863,6 +1025,13 @@ function App() {
   const paperclipBaseUrl = serviceUrl(state.infrastructure.services?.hr_url, "http://localhost:3100");
   const hermesBaseUrl = serviceUrl(state.infrastructure.services?.brain_url, "http://localhost:9119");
   const routerBaseUrl = serviceUrl(state.infrastructure.services?.router_url, "http://localhost:20128");
+  const activePaperclipCompany = state.paperclipCompany;
+  const paperclipCompanyPrefix = activePaperclipCompany.selectedIssuePrefix ? `/${activePaperclipCompany.selectedIssuePrefix}` : "";
+  const paperclipDashboardUrl = `${paperclipBaseUrl}${paperclipCompanyPrefix}/dashboard`;
+  const paperclipOrgUrl = `${paperclipBaseUrl}${paperclipCompanyPrefix}/org`;
+  const paperclipIssuesUrl = `${paperclipBaseUrl}${paperclipCompanyPrefix}/issues`;
+  const monitoringDiagnostics = state.monitoringDiagnostics;
+  const zeroHumanControlsVisible = false;
   const blockedTasks = state.tasks.filter((task) => ["blocked", "error"].includes(task.status));
   const pendingApprovals = state.tasks.filter((task) => ["pending_review", "review", "in_review"].includes(task.status));
   const activeRuns = workroom.runs.filter((run) => ["running", "queued"].includes(run.status));
@@ -876,6 +1045,9 @@ function App() {
     state.alerts.length +
     guardrailDetails.filter((item) => ["missing_disposition", "stale_meeting", "high_cost_run", "blocked_issue"].includes(item.trigger)).length;
   const recentMemory = state.brainMemory.recentNotes.slice(0, 3);
+  const hermesReadyAgents = state.hermesAgentMemory.filter((agent) => agent.status === "ready").length;
+  const hermesMemoryInjected = state.hermesAgentMemory.filter((agent) => agent.memoryInjected).length;
+  const routerSpike = state.routerMonitor.spikeGuardrail;
 
   useEffect(() => {
     if (!workRepositories.some((repo) => repo.id === repositoryId)) {
@@ -1355,6 +1527,79 @@ function App() {
           </div>
         </section>
 
+        <section className="companyMonitor">
+          <div>
+            <p className="eyebrow">Paperclip source of truth</p>
+            <h2>{activePaperclipCompany.selectedName ?? "No active Paperclip company"}</h2>
+            <p>
+              {activePaperclipCompany.selectedIssuePrefix ? `${activePaperclipCompany.selectedIssuePrefix} · ` : ""}
+              {activePaperclipCompany.selectedCompanyId ?? activePaperclipCompany.error ?? "Configure PAPERCLIP_COMPANY_ID or complete Paperclip onboarding."}
+            </p>
+          </div>
+          <div className="companyMonitorActions">
+            <Status value={activePaperclipCompany.ok ? activePaperclipCompany.source : "unavailable"} />
+            <a className="buttonLink" href={paperclipDashboardUrl} target="_blank" rel="noreferrer">Open Paperclip</a>
+            <a className="buttonLink" href={paperclipOrgUrl} target="_blank" rel="noreferrer">Org</a>
+            <a className="buttonLink" href={paperclipIssuesUrl} target="_blank" rel="noreferrer">Issues</a>
+          </div>
+          {(activePaperclipCompany.warning || activePaperclipCompany.duplicateNameWarnings.length > 0) && (
+            <div className="companyWarnings">
+              {(activePaperclipCompany.duplicateNameWarnings.length > 0
+                ? activePaperclipCompany.duplicateNameWarnings
+                : [activePaperclipCompany.warning]
+              )
+                .filter(Boolean)
+                .map((warning) => <span key={warning}>{warning}</span>)}
+            </div>
+          )}
+          <div className="companyList">
+            {activePaperclipCompany.companies.slice(0, 4).map((company) => (
+              <article className={company.id === activePaperclipCompany.selectedCompanyId ? "selected" : ""} key={company.id}>
+                <strong>{company.name}</strong>
+                <span>{company.issuePrefix || "no prefix"} · {company.activeAgentCount}/{company.agentCount} agents · {company.openIssueCount} open issues</span>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="monitoringDiagnostics">
+          <div className="monitoringDiagnosticsHead">
+            <div>
+              <p className="eyebrow">Monitoring diagnostics</p>
+              <h2>{monitoringDiagnostics.ok ? "Runtime wiring looks observable" : "Runtime wiring needs attention"}</h2>
+              <p>
+                {monitoringDiagnostics.selectedIssuePrefix ? `${monitoringDiagnostics.selectedIssuePrefix} · ` : ""}
+                {monitoringDiagnostics.selectedName ?? "Paperclip company not selected"} · {monitoringDiagnostics.generatedAt ? timeAgo(monitoringDiagnostics.generatedAt) : "waiting"}
+              </p>
+            </div>
+            <Status value={monitoringDiagnostics.mode === "monitoring_only" ? "monitoring only" : "controls enabled"} />
+          </div>
+          <div className="diagnosticGrid">
+            {(monitoringDiagnostics.items.length > 0
+              ? monitoringDiagnostics.items
+              : [{
+                id: "diagnostics-loading",
+                severity: "info" as const,
+                title: "Waiting for diagnostics",
+                detail: "Zero-Human is waiting for the next realtime state snapshot.",
+                action: "Keep this panel open; it updates from the owner state stream."
+              }]
+            ).map((item) => (
+              <article className={`diagnosticItem ${item.severity}`} key={item.id}>
+                <strong>{item.title}</strong>
+                <span>{item.detail}</span>
+                {item.action && <small>{item.action}</small>}
+                {item.href && <a className="buttonLink compact" href={item.href} target="_blank" rel="noreferrer">Open</a>}
+              </article>
+            ))}
+          </div>
+          <div className="companyMonitorActions">
+            <a className="buttonLink compact" href={monitoringDiagnostics.links.paperclipDashboard} target="_blank" rel="noreferrer">Paperclip</a>
+            <a className="buttonLink compact" href={monitoringDiagnostics.links.hermesLogs} target="_blank" rel="noreferrer">Hermes logs</a>
+            <a className="buttonLink compact" href={monitoringDiagnostics.links.routerUsage} target="_blank" rel="noreferrer">9Router usage</a>
+          </div>
+        </section>
+
         <section className="metrics">
           <Metric icon={<BadgeDollarSign />} label="Budget spent" value={`${money(state.budget.spent)} / ${money(state.budget.global)}`} />
           <Metric icon={<Users />} label="Agents online" value={`${state.agents.length}`} />
@@ -1407,7 +1652,7 @@ function App() {
                 <p>Live company health, decisions, blockers, cost, repositories, and execution links.</p>
               </div>
               <div className="deepLinks">
-                <a className="iconText" href={`${paperclipBaseUrl}/dashboard`} target="_blank" rel="noreferrer">Paperclip</a>
+                <a className="iconText" href={paperclipDashboardUrl} target="_blank" rel="noreferrer">Paperclip</a>
                 <a className="iconText" href={`${hermesBaseUrl}/logs`} target="_blank" rel="noreferrer">Hermes</a>
                 <a className="iconText" href={`${routerBaseUrl}/dashboard/usage`} target="_blank" rel="noreferrer">9Router</a>
               </div>
@@ -1462,9 +1707,13 @@ function App() {
                 <h2>Hermes guardrails</h2>
                 <p>Bounded blocker, meeting, retry, and cost controls for Paperclip.</p>
               </div>
-              <button onClick={scanPaperclipHermesInterventions} disabled={busy}>
-                <RefreshCw size={15} /> Scan guardrails
-              </button>
+              {zeroHumanControlsVisible ? (
+                <button onClick={scanPaperclipHermesInterventions} disabled={busy}>
+                  <RefreshCw size={15} /> Scan guardrails
+                </button>
+              ) : (
+                <span className="readOnlyChip">Auto observed</span>
+              )}
             </div>
             <div className="syncSummary">
               <span>{state.paperclipHermesInterventions.scanned} issues scanned</span>
@@ -1709,13 +1958,19 @@ function App() {
                   </div>
                   <div className="agentFooter">
                     <small>{agent.modelCombo} · cap {money(agent.maxBudgetUsd)}</small>
-                    <button onClick={() => hire(agent.id)} disabled={busy}>
-                      <Plus size={15} /> Hire
-                    </button>
-                    {agent.status === "paused" && (
-                      <button onClick={() => resume(agent.id)} disabled={busy}>
-                        Resume
-                      </button>
+                    {zeroHumanControlsVisible ? (
+                      <>
+                        <button onClick={() => hire(agent.id)} disabled={busy}>
+                          <Plus size={15} /> Hire
+                        </button>
+                        {agent.status === "paused" && (
+                          <button onClick={() => resume(agent.id)} disabled={busy}>
+                            Resume
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <a className="buttonLink compact" href={paperclipOrgUrl} target="_blank" rel="noreferrer">Open in Paperclip</a>
                     )}
                   </div>
                 </article>
@@ -1728,12 +1983,16 @@ function App() {
           <div className="panel hiring">
             <div className="panelHead">
               <div>
-                <h2>Hiring approvals</h2>
-                <p>Paperclip chat intake is mapped first, then activated after approval.</p>
+                <h2>Hiring monitor</h2>
+                <p>Hiring authority lives in Paperclip. Zero-Human only mirrors signals and policy guidance.</p>
               </div>
-              <button onClick={scanPaperclipChatSignals} disabled={busy}>
-                <RefreshCw size={15} /> Scan chat
-              </button>
+              {zeroHumanControlsVisible ? (
+                <button onClick={scanPaperclipChatSignals} disabled={busy}>
+                  <RefreshCw size={15} /> Scan chat
+                </button>
+              ) : (
+                <a className="buttonLink" href={paperclipOrgUrl} target="_blank" rel="noreferrer">Manage in Paperclip</a>
+              )}
             </div>
             <div className="syncSummary">
               <span>{state.paperclipChatSignals.detected} chat signals</span>
@@ -1755,42 +2014,49 @@ function App() {
                 ))}
               </div>
             )}
-            <form className="hireForm" onSubmit={createHireRequest}>
-              <label>
-                Title
-                <input
-                  value={hireDraft.title}
-                  placeholder="Brand Strategist"
-                  onChange={(event) => setHireDraft((current) => ({ ...current, title: event.target.value }))}
-                />
-              </label>
-              <label>
-                Department
-                <input
-                  value={hireDraft.department}
-                  placeholder="Marketing"
-                  onChange={(event) => setHireDraft((current) => ({ ...current, department: event.target.value }))}
-                />
-              </label>
-              <label>
-                Requested role
-                <input
-                  value={hireDraft.requestedRole}
-                  placeholder="Optional Paperclip role"
-                  onChange={(event) => setHireDraft((current) => ({ ...current, requestedRole: event.target.value }))}
-                />
-              </label>
-              <label>
-                Hiring brief
-                <textarea
-                  value={hireDraft.description}
-                  onChange={(event) => setHireDraft((current) => ({ ...current, description: event.target.value }))}
-                />
-              </label>
-              <button disabled={busy || !hireDraft.title.trim()}>
-                <Plus size={15} /> Request hire
-              </button>
-            </form>
+            {zeroHumanControlsVisible ? (
+              <form className="hireForm" onSubmit={createHireRequest}>
+                <label>
+                  Title
+                  <input
+                    value={hireDraft.title}
+                    placeholder="Brand Strategist"
+                    onChange={(event) => setHireDraft((current) => ({ ...current, title: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Department
+                  <input
+                    value={hireDraft.department}
+                    placeholder="Marketing"
+                    onChange={(event) => setHireDraft((current) => ({ ...current, department: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Requested role
+                  <input
+                    value={hireDraft.requestedRole}
+                    placeholder="Optional Paperclip role"
+                    onChange={(event) => setHireDraft((current) => ({ ...current, requestedRole: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Hiring brief
+                  <textarea
+                    value={hireDraft.description}
+                    onChange={(event) => setHireDraft((current) => ({ ...current, description: event.target.value }))}
+                  />
+                </label>
+                <button disabled={busy || !hireDraft.title.trim()}>
+                  <Plus size={15} /> Request hire
+                </button>
+              </form>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>Read-only monitor</strong>
+                <span>Create, approve, or reject hires inside Paperclip so the company board remains canonical.</span>
+              </div>
+            )}
             <div className="hiringQueue">
               {pendingHiring.length === 0 && <div className="empty">No pending hires. Paperclip requests will wait here for approval.</div>}
               {pendingHiring.map((request) => (
@@ -1807,10 +2073,12 @@ function App() {
                       {request.suggestedSkills.slice(0, 5).map((skill) => <span key={skill}>{skill}</span>)}
                     </div>
                   </div>
-                  <div className="hireActions">
-                    <button onClick={() => rejectHireRequest(request.id)} disabled={busy}>Reject</button>
-                    <button onClick={() => approveHireRequest(request.id)} disabled={busy}><Check size={15} /> Approve</button>
-                  </div>
+                  {zeroHumanControlsVisible && (
+                    <div className="hireActions">
+                      <button onClick={() => rejectHireRequest(request.id)} disabled={busy}>Reject</button>
+                      <button onClick={() => approveHireRequest(request.id)} disabled={busy}><Check size={15} /> Approve</button>
+                    </div>
+                  )}
                 </article>
               ))}
             </div>
@@ -1822,7 +2090,7 @@ function App() {
             <div className="panelHead">
               <div>
                 <h2>Agent issue policy</h2>
-                <p>Controls whether agent-created Paperclip issues become auto-assigned work, triage, approval, or blocked.</p>
+                <p>Mirrors how Paperclip routes agent-created issues into assignment, triage, approval, or blocked state.</p>
               </div>
               <ShieldCheck size={20} />
             </div>
@@ -1845,39 +2113,46 @@ function App() {
                 </article>
               ))}
             </div>
-            <form className="issuePolicyTester" onSubmit={evaluateIssuePolicy}>
-              <label>
-                Agent
-                <select value={issuePolicyDraft.agentId} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, agentId: event.target.value }))}>
-                  {state.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.id} · {agent.role}</option>)}
-                </select>
-              </label>
-              <label>
-                Issue title
-                <input value={issuePolicyDraft.title} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, title: event.target.value }))} />
-              </label>
-              <label>
-                Type
-                <select value={issuePolicyDraft.type} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, type: event.target.value }))}>
-                  <option value="architecture">Architecture</option>
-                  <option value="coding">Coding</option>
-                  <option value="review">Review</option>
-                  <option value="test">Test</option>
-                  <option value="deploy">Deploy</option>
-                </select>
-              </label>
-              <label>
-                Priority
-                <input type="range" min="1" max="3" value={issuePolicyDraft.priority} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, priority: Number(event.target.value) as 1 | 2 | 3 }))} />
-              </label>
-              <label>
-                Description
-                <textarea value={issuePolicyDraft.description} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, description: event.target.value }))} />
-              </label>
-              <button disabled={busy || !issuePolicyDraft.title.trim()}>
-                <ShieldCheck size={15} /> Evaluate policy
-              </button>
-            </form>
+            {zeroHumanControlsVisible ? (
+              <form className="issuePolicyTester" onSubmit={evaluateIssuePolicy}>
+                <label>
+                  Agent
+                  <select value={issuePolicyDraft.agentId} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, agentId: event.target.value }))}>
+                    {state.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.id} · {agent.role}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Issue title
+                  <input value={issuePolicyDraft.title} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, title: event.target.value }))} />
+                </label>
+                <label>
+                  Type
+                  <select value={issuePolicyDraft.type} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, type: event.target.value }))}>
+                    <option value="architecture">Architecture</option>
+                    <option value="coding">Coding</option>
+                    <option value="review">Review</option>
+                    <option value="test">Test</option>
+                    <option value="deploy">Deploy</option>
+                  </select>
+                </label>
+                <label>
+                  Priority
+                  <input type="range" min="1" max="3" value={issuePolicyDraft.priority} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, priority: Number(event.target.value) as 1 | 2 | 3 }))} />
+                </label>
+                <label>
+                  Description
+                  <textarea value={issuePolicyDraft.description} onChange={(event) => setIssuePolicyDraft((current) => ({ ...current, description: event.target.value }))} />
+                </label>
+                <button disabled={busy || !issuePolicyDraft.title.trim()}>
+                  <ShieldCheck size={15} /> Evaluate policy
+                </button>
+              </form>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>Policy mirror</strong>
+                <span>Use Paperclip issue creation and assignment. Zero-Human observes the resulting policy state.</span>
+              </div>
+            )}
             {issuePolicyError && <p className="formWarning">{issuePolicyError}</p>}
             {issuePolicyEvaluation && (
               <article className="policyDecision">
@@ -1901,14 +2176,18 @@ function App() {
                 <h2>Paperclip sync</h2>
                 <p>Owner manifest that aligns Paperclip agents with Zero-Human roles, skills, and MCP tools.</p>
               </div>
-              <div className="buttonGroup">
-                <button onClick={resetPaperclipManifest} disabled={busy || state.paperclipSync.records.length === 0}>
-                  Reset
-                </button>
-                <button onClick={syncPaperclipManifest} disabled={busy}>
-                  <RefreshCw size={15} /> Sync manifest
-                </button>
-              </div>
+              {zeroHumanControlsVisible ? (
+                <div className="buttonGroup">
+                  <button onClick={resetPaperclipManifest} disabled={busy || state.paperclipSync.records.length === 0}>
+                    Reset
+                  </button>
+                  <button onClick={syncPaperclipManifest} disabled={busy}>
+                    <RefreshCw size={15} /> Sync manifest
+                  </button>
+                </div>
+              ) : (
+                <span className="readOnlyChip">Read-only mirror</span>
+              )}
             </div>
             <div className="syncSummary">
               <span>{state.paperclipSync.records.filter((record) => record.status === "synced").length} synced</span>
@@ -1939,9 +2218,13 @@ function App() {
                   <pre className="runbook">{record.runbook}</pre>
                   <div className="agentFooter">
                     <small>{record.desiredHash}{record.lastSyncedAt ? ` · ${new Date(record.lastSyncedAt).toLocaleString()}` : ""}</small>
-                    <button onClick={() => markPaperclipApplied(record.agentId)} disabled={busy || record.status === "synced"}>
-                      <Check size={15} /> Mark applied
-                    </button>
+                    {zeroHumanControlsVisible ? (
+                      <button onClick={() => markPaperclipApplied(record.agentId)} disabled={busy || record.status === "synced"}>
+                        <Check size={15} /> Mark applied
+                      </button>
+                    ) : (
+                      <span className="readOnlyChip">Observed</span>
+                    )}
                   </div>
                 </article>
               ))}
@@ -1950,6 +2233,7 @@ function App() {
           )}
 
           {activeView === "agents" && (
+          zeroHumanControlsVisible ? (
           <form className="panel taskComposer" onSubmit={createTask}>
             <div className="panelHead">
               <div>
@@ -1995,91 +2279,118 @@ function App() {
               <p className="formWarning">Budget protection paused this agent.</p>
             )}
           </form>
+          ) : (
+          <div className="panel taskComposer">
+            <div className="panelHead">
+              <div>
+                <h2>Assignment monitor</h2>
+                <p>Paperclip owns issue creation, assignment, and execution. Zero-Human watches the board and Codex runs.</p>
+              </div>
+              <Play size={20} />
+            </div>
+            <div className="readOnlyNotice">
+              <strong>Control moved to Paperclip</strong>
+              <span>Create issues, assign agents, and run heartbeats inside Paperclip. Use Execution Monitor here to inspect terminal output and changed files.</span>
+            </div>
+            <a className="buttonLink" href={paperclipIssuesUrl} target="_blank" rel="noreferrer">Open Paperclip issues</a>
+          </div>
+          )
           )}
 
           {activeView === "gateway" && (
           <div className="panel repositories">
             <div className="panelHead">
               <div>
-                <h2>Repository intake</h2>
-                <p>Clone Git repositories and publish ready workspaces to Paperclip.</p>
+                <h2>Repository monitor</h2>
+                <p>Observe registered workspaces and Paperclip repository links. Repository control belongs in Paperclip.</p>
               </div>
-              <button onClick={syncPaperclipRepositories} disabled={busy}>
-                <RefreshCw size={15} /> Sync Paperclip
-              </button>
-            </div>
-            <form className="repoForm" onSubmit={addRepository}>
-              <label>
-                Name
-                <input
-                  value={repoDraft.name}
-                  placeholder="client-webapp"
-                  onChange={(event) => setRepoDraft((current) => ({ ...current, name: event.target.value }))}
-                />
-              </label>
-              <label>
-                Git URL
-                <input
-                  value={repoDraft.url}
-                  placeholder="https://github.com/org/repo.git"
-                  onChange={(event) => setRepoDraft((current) => ({ ...current, url: event.target.value }))}
-                />
-              </label>
-              <label>
-                Branch
-                <input
-                  value={repoDraft.branch}
-                  onChange={(event) => setRepoDraft((current) => ({ ...current, branch: event.target.value }))}
-                />
-              </label>
-              <label>
-                Auth
-                <select
-                  value={repoDraft.authType}
-                  onChange={(event) => setRepoDraft((current) => ({ ...current, authType: event.target.value as typeof repoDraft.authType }))}
-                >
-                  <option value="none">Public / no auth</option>
-                  <option value="https-token">HTTPS token</option>
-                  <option value="ssh-key">SSH private key</option>
-                </select>
-              </label>
-              {repoDraft.authType === "https-token" && (
-                <>
-                  <label>
-                    Username
-                    <input
-                      value={repoDraft.username}
-                      placeholder="x-access-token"
-                      onChange={(event) => setRepoDraft((current) => ({ ...current, username: event.target.value }))}
-                    />
-                  </label>
-                  <label>
-                    Token
-                    <input
-                      type="password"
-                      value={repoDraft.token}
-                      placeholder="GitHub PAT or GitLab token"
-                      onChange={(event) => setRepoDraft((current) => ({ ...current, token: event.target.value }))}
-                    />
-                  </label>
-                </>
+              {zeroHumanControlsVisible ? (
+                <button onClick={syncPaperclipRepositories} disabled={busy}>
+                  <RefreshCw size={15} /> Sync Paperclip
+                </button>
+              ) : (
+                <a className="buttonLink" href={paperclipIssuesUrl} target="_blank" rel="noreferrer">Open Paperclip</a>
               )}
-              {repoDraft.authType === "ssh-key" && (
+            </div>
+            {zeroHumanControlsVisible ? (
+              <form className="repoForm" onSubmit={addRepository}>
                 <label>
-                  SSH private key
-                  <textarea
-                    className="secretBox"
-                    value={repoDraft.sshPrivateKey}
-                    placeholder="Paste the complete SSH private key here"
-                    onChange={(event) => setRepoDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
+                  Name
+                  <input
+                    value={repoDraft.name}
+                    placeholder="client-webapp"
+                    onChange={(event) => setRepoDraft((current) => ({ ...current, name: event.target.value }))}
                   />
                 </label>
-              )}
-              <button disabled={busy || !repoDraft.url.trim()}>
-                <Plus size={15} /> Add repo
-              </button>
-              {repoError && <p className="formWarning">{repoError}</p>}
-            </form>
+                <label>
+                  Git URL
+                  <input
+                    value={repoDraft.url}
+                    placeholder="https://github.com/org/repo.git"
+                    onChange={(event) => setRepoDraft((current) => ({ ...current, url: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Branch
+                  <input
+                    value={repoDraft.branch}
+                    onChange={(event) => setRepoDraft((current) => ({ ...current, branch: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Auth
+                  <select
+                    value={repoDraft.authType}
+                    onChange={(event) => setRepoDraft((current) => ({ ...current, authType: event.target.value as typeof repoDraft.authType }))}
+                  >
+                    <option value="none">Public / no auth</option>
+                    <option value="https-token">HTTPS token</option>
+                    <option value="ssh-key">SSH private key</option>
+                  </select>
+                </label>
+                {repoDraft.authType === "https-token" && (
+                  <>
+                    <label>
+                      Username
+                      <input
+                        value={repoDraft.username}
+                        placeholder="x-access-token"
+                        onChange={(event) => setRepoDraft((current) => ({ ...current, username: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      Token
+                      <input
+                        type="password"
+                        value={repoDraft.token}
+                        placeholder="GitHub PAT or GitLab token"
+                        onChange={(event) => setRepoDraft((current) => ({ ...current, token: event.target.value }))}
+                      />
+                    </label>
+                  </>
+                )}
+                {repoDraft.authType === "ssh-key" && (
+                  <label>
+                    SSH private key
+                    <textarea
+                      className="secretBox"
+                      value={repoDraft.sshPrivateKey}
+                      placeholder="Paste the complete SSH private key here"
+                      onChange={(event) => setRepoDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
+                    />
+                  </label>
+                )}
+                <button disabled={busy || !repoDraft.url.trim()}>
+                  <Plus size={15} /> Add repo
+                </button>
+                {repoError && <p className="formWarning">{repoError}</p>}
+              </form>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>Read-only repository view</strong>
+                <span>Zero-Human no longer clones or syncs repositories from this panel. Manage workspaces through Paperclip, then monitor execution here.</span>
+              </div>
+            )}
             <div className="repoList">
               {workRepositories.map((repo) => (
                 <article className="repoRow" key={repo.id}>
@@ -2091,9 +2402,11 @@ function App() {
                   </div>
                   <div className="repoActions">
                     <Status value={repo.status} />
-                    <button onClick={() => syncRepository(repo.id)} disabled={busy}>
-                      <RefreshCw size={15} /> Sync
-                    </button>
+                    {zeroHumanControlsVisible && (
+                      <button onClick={() => syncRepository(repo.id)} disabled={busy}>
+                        <RefreshCw size={15} /> Sync
+                      </button>
+                    )}
                   </div>
                 </article>
               ))}
@@ -2143,36 +2456,108 @@ function App() {
               <span>Auto merge <strong>{state.policies.auto_merge ? "on" : "off"}</strong></span>
               <span>Paused agents <strong>{pausedAgents}</strong></span>
             </div>
-            <form className="budgetEditor" onSubmit={saveBudget}>
-              <label>
-                Global cap
-                <input
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={budgetDraft.globalBudgetUsd}
-                  onChange={(event) => setBudgetDraft((current) => ({ ...current, globalBudgetUsd: event.target.value }))}
-                />
-              </label>
-              {state.agents.map((agent) => (
-                <label key={agent.id}>
-                  {agent.id.replaceAll("_", " ")}
+            {zeroHumanControlsVisible ? (
+              <form className="budgetEditor" onSubmit={saveBudget}>
+                <label>
+                  Global cap
                   <input
                     type="number"
                     min="0.01"
                     step="0.01"
-                    value={budgetDraft.agentCaps[agent.id] ?? ""}
-                    onChange={(event) => setBudgetDraft((current) => ({
-                      ...current,
-                      agentCaps: { ...current.agentCaps, [agent.id]: event.target.value }
-                    }))}
+                    value={budgetDraft.globalBudgetUsd}
+                    onChange={(event) => setBudgetDraft((current) => ({ ...current, globalBudgetUsd: event.target.value }))}
                   />
                 </label>
+                {state.agents.map((agent) => (
+                  <label key={agent.id}>
+                    {agent.id.replaceAll("_", " ")}
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={budgetDraft.agentCaps[agent.id] ?? ""}
+                      onChange={(event) => setBudgetDraft((current) => ({
+                        ...current,
+                        agentCaps: { ...current.agentCaps, [agent.id]: event.target.value }
+                      }))}
+                    />
+                  </label>
+                ))}
+                <button disabled={busy || !budgetDraft.globalBudgetUsd}>
+                  <Check size={15} /> Save caps
+                </button>
+              </form>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>Budget monitor</strong>
+                <span>Budget policy is observed here. Operational budget decisions stay on the Paperclip company board.</span>
+              </div>
+            )}
+          </div>
+          )}
+
+          {activeView === "memory" && (
+          <div className="panel hermesAgentMemory">
+            <div className="panelHead">
+              <div>
+                <h2>Hermes memory per agent</h2>
+                <p>Read-only view of injected memory, automatic skill/MCP assignment, learned outcomes, and role relevance.</p>
+              </div>
+              <Brain size={20} />
+            </div>
+            <div className="brainSummary">
+              <article><span>Memory injected</span><strong>{hermesMemoryInjected}/{state.hermesAgentMemory.length}</strong></article>
+              <article><span>Ready agents</span><strong>{hermesReadyAgents}</strong></article>
+              <article><span>Learned outcomes</span><strong>{state.hermesAgentMemory.reduce((sum, agent) => sum + agent.learnedOutcomes, 0)}</strong></article>
+              <article><span>Failed learning</span><strong>{state.hermesAgentMemory.reduce((sum, agent) => sum + agent.failedLearning, 0)}</strong></article>
+            </div>
+            <div className="hermesAgentGrid">
+              {state.hermesAgentMemory.length === 0 && <div className="empty">No Hermes per-agent memory state has been reported yet.</div>}
+              {state.hermesAgentMemory.map((agent) => (
+                <article className="hermesAgentCard" key={agent.agentId}>
+                  <div className="hermesAgentHead">
+                    <div>
+                      <strong>{agent.agentId.replaceAll("_", " ")}</strong>
+                      <span>{agent.role} - {agent.executor} - {agent.modelCombo}</span>
+                    </div>
+                    <Status value={agent.status} />
+                  </div>
+                  <div className="brainBars">
+                    <label>
+                      <span>Confidence</span>
+                      <strong>{Math.round(agent.confidence * 100)}%</strong>
+                      <i><b style={{ width: `${Math.round(agent.confidence * 100)}%` }} /></i>
+                    </label>
+                    <label>
+                      <span>Role relevance</span>
+                      <strong>{Math.round(agent.relevance * 100)}%</strong>
+                      <i><b style={{ width: `${Math.round(agent.relevance * 100)}%` }} /></i>
+                    </label>
+                  </div>
+                  <div className="brainFactGrid">
+                    <span><strong>{agent.memoryInjected ? "yes" : "no"}</strong>memory injected</span>
+                    <span><strong>{agent.memoryNoteCount}</strong>notes</span>
+                    <span><strong>{agent.skillsAssigned.length}</strong>skills</span>
+                    <span><strong>{agent.mcpAssigned.length}</strong>MCP</span>
+                  </div>
+                  <div className="skillRow compact">
+                    {agent.skillsAssigned.slice(0, 7).map((skill) => <span key={skill}>{skill}</span>)}
+                    {agent.skillsAssigned.length > 7 && <span>+{agent.skillsAssigned.length - 7}</span>}
+                  </div>
+                  <div className="mcpRow">
+                    {agent.mcpAssigned.map((mcp) => (
+                      <span className={mcp.mandatory ? "mandatory" : ""} key={mcp.id}>{mcp.name}</span>
+                    ))}
+                  </div>
+                  <div className="memorySnippetList">
+                    {agent.recentMemory.length === 0 && <small>No recent role-specific memory note.</small>}
+                    {agent.recentMemory.slice(0, 2).map((note, index) => (
+                      <small key={`${agent.agentId}-note-${index}`}>{note.note}</small>
+                    ))}
+                  </div>
+                </article>
               ))}
-              <button disabled={busy || !budgetDraft.globalBudgetUsd}>
-                <Check size={15} /> Save caps
-              </button>
-            </form>
+            </div>
           </div>
           )}
 
@@ -2244,107 +2629,121 @@ function App() {
               </div>
               <FolderGit2 size={20} />
             </div>
-            <form className="repoForm sourceIntake" onSubmit={addSkillSource}>
-              <label>
-                Source name
-                <input
-                  value={skillSourceDraft.name}
-                  placeholder="company-skillbook"
-                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, name: event.target.value }))}
-                />
-              </label>
-              <label>
-                Git URL
-                <input
-                  value={skillSourceDraft.url}
-                  placeholder="https://github.com/org/skills.git"
-                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, url: event.target.value }))}
-                />
-              </label>
-              <label>
-                Branch
-                <input
-                  value={skillSourceDraft.branch}
-                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, branch: event.target.value }))}
-                />
-              </label>
-              <label>
-                Auth
-                <select
-                  value={skillSourceDraft.authType}
-                  onChange={(event) => setSkillSourceDraft((current) => ({ ...current, authType: event.target.value as typeof skillSourceDraft.authType }))}
-                >
-                  <option value="none">Public / no auth</option>
-                  <option value="https-token">HTTPS token</option>
-                  <option value="ssh-key">SSH private key</option>
-                </select>
-              </label>
-              {skillSourceDraft.authType === "https-token" && (
-                <>
-                  <label>
-                    Username
-                    <input
-                      value={skillSourceDraft.username}
-                      placeholder="x-access-token"
-                      onChange={(event) => setSkillSourceDraft((current) => ({ ...current, username: event.target.value }))}
-                    />
-                  </label>
-                  <label>
-                    Token
-                    <input
-                      type="password"
-                      value={skillSourceDraft.token}
-                      placeholder="GitHub PAT or GitLab token"
-                      onChange={(event) => setSkillSourceDraft((current) => ({ ...current, token: event.target.value }))}
-                    />
-                  </label>
-                </>
-              )}
-              {skillSourceDraft.authType === "ssh-key" && (
+            {zeroHumanControlsVisible ? (
+              <form className="repoForm sourceIntake" onSubmit={addSkillSource}>
                 <label>
-                  SSH private key
-                  <textarea
-                    className="secretBox"
-                    value={skillSourceDraft.sshPrivateKey}
-                    placeholder="Paste the complete SSH private key here"
-                    onChange={(event) => setSkillSourceDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
+                  Source name
+                  <input
+                    value={skillSourceDraft.name}
+                    placeholder="company-skillbook"
+                    onChange={(event) => setSkillSourceDraft((current) => ({ ...current, name: event.target.value }))}
                   />
                 </label>
-              )}
-              <button disabled={busy || !skillSourceDraft.url.trim()}>
-                <Plus size={15} /> Add skill source
-              </button>
-              {skillSourceError && <p className="formWarning">{skillSourceError}</p>}
-            </form>
+                <label>
+                  Git URL
+                  <input
+                    value={skillSourceDraft.url}
+                    placeholder="https://github.com/org/skills.git"
+                    onChange={(event) => setSkillSourceDraft((current) => ({ ...current, url: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Branch
+                  <input
+                    value={skillSourceDraft.branch}
+                    onChange={(event) => setSkillSourceDraft((current) => ({ ...current, branch: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Auth
+                  <select
+                    value={skillSourceDraft.authType}
+                    onChange={(event) => setSkillSourceDraft((current) => ({ ...current, authType: event.target.value as typeof skillSourceDraft.authType }))}
+                  >
+                    <option value="none">Public / no auth</option>
+                    <option value="https-token">HTTPS token</option>
+                    <option value="ssh-key">SSH private key</option>
+                  </select>
+                </label>
+                {skillSourceDraft.authType === "https-token" && (
+                  <>
+                    <label>
+                      Username
+                      <input
+                        value={skillSourceDraft.username}
+                        placeholder="x-access-token"
+                        onChange={(event) => setSkillSourceDraft((current) => ({ ...current, username: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      Token
+                      <input
+                        type="password"
+                        value={skillSourceDraft.token}
+                        placeholder="GitHub PAT or GitLab token"
+                        onChange={(event) => setSkillSourceDraft((current) => ({ ...current, token: event.target.value }))}
+                      />
+                    </label>
+                  </>
+                )}
+                {skillSourceDraft.authType === "ssh-key" && (
+                  <label>
+                    SSH private key
+                    <textarea
+                      className="secretBox"
+                      value={skillSourceDraft.sshPrivateKey}
+                      placeholder="Paste the complete SSH private key here"
+                      onChange={(event) => setSkillSourceDraft((current) => ({ ...current, sshPrivateKey: event.target.value }))}
+                    />
+                  </label>
+                )}
+                <button disabled={busy || !skillSourceDraft.url.trim()}>
+                  <Plus size={15} /> Add skill source
+                </button>
+                {skillSourceError && <p className="formWarning">{skillSourceError}</p>}
+              </form>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>Automatic memory source mapping</strong>
+                <span>Skill and memory sources are monitored here. Paperclip/Hermes automation owns import, classification, and assignment.</span>
+              </div>
+            )}
             <div className="sourceDivider">
               <strong>Import into memory</strong>
               <span>Scan SKILL.md files, skip duplicates, and map new skills into company roles.</span>
             </div>
-            <form className="repoForm" onSubmit={importRepoSkills}>
-              <label>
-                Skill source
-                <select
-                  value={skillImportDraft.repositoryId}
-                  onChange={(event) => setSkillImportDraft((current) => ({ ...current, repositoryId: event.target.value }))}
-                >
-                  {skillSourceRepositories.map((repo) => (
-                    <option value={repo.id} key={repo.id}>{repo.name} · {repo.status}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Path
-                <input
-                  value={skillImportDraft.path}
-                  placeholder="skills or leave empty for whole repo"
-                  onChange={(event) => setSkillImportDraft((current) => ({ ...current, path: event.target.value }))}
-                />
-              </label>
-              <button disabled={busy || !skillImportDraft.repositoryId}>
-                <Plus size={15} /> Import skills
-              </button>
-              {skillImportError && <p className="formWarning">{skillImportError}</p>}
-            </form>
+            {zeroHumanControlsVisible ? (
+              <form className="repoForm" onSubmit={importRepoSkills}>
+                <label>
+                  Skill source
+                  <select
+                    value={skillImportDraft.repositoryId}
+                    onChange={(event) => setSkillImportDraft((current) => ({ ...current, repositoryId: event.target.value }))}
+                  >
+                    {skillSourceRepositories.map((repo) => (
+                      <option value={repo.id} key={repo.id}>{repo.name} · {repo.status}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Path
+                  <input
+                    value={skillImportDraft.path}
+                    placeholder="skills or leave empty for whole repo"
+                    onChange={(event) => setSkillImportDraft((current) => ({ ...current, path: event.target.value }))}
+                  />
+                </label>
+                <button disabled={busy || !skillImportDraft.repositoryId}>
+                  <Plus size={15} /> Import skills
+                </button>
+                {skillImportError && <p className="formWarning">{skillImportError}</p>}
+              </form>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>Import is automated</strong>
+                <span>Zero-Human reports imported, skipped, and duplicate skills. Manual import controls are intentionally disabled.</span>
+              </div>
+            )}
             <div className="repoList">
               {skillSourceRepositories.length === 0 && <div className="empty">No skill source registered yet. Add a skill repo above first.</div>}
               {skillSourceRepositories.map((repo) => (
@@ -2357,9 +2756,11 @@ function App() {
                   </div>
                   <div className="repoActions">
                     <Status value={repo.status} />
-                    <button onClick={() => syncRepository(repo.id)} disabled={busy}>
-                      <RefreshCw size={15} /> Sync
-                    </button>
+                    {zeroHumanControlsVisible && (
+                      <button onClick={() => syncRepository(repo.id)} disabled={busy}>
+                        <RefreshCw size={15} /> Sync
+                      </button>
+                    )}
                   </div>
                 </article>
               ))}
@@ -2387,9 +2788,13 @@ function App() {
                 <h2>Hermes bridge</h2>
                 <p>Inject memory, delegation, and token guardrails into Paperclip agents before Codex runs.</p>
               </div>
-              <button onClick={syncPaperclipHermesBridge} disabled={busy}>
-                <RefreshCw size={15} /> Sync Hermes
-              </button>
+              {zeroHumanControlsVisible ? (
+                <button onClick={syncPaperclipHermesBridge} disabled={busy}>
+                  <RefreshCw size={15} /> Sync Hermes
+                </button>
+              ) : (
+                <span className="readOnlyChip">Auto bridge</span>
+              )}
             </div>
             <div className="syncSummary">
               <span>{state.paperclipHermesBridge.protocolSkillSynced ? "protocol synced" : "protocol pending"}</span>
@@ -2423,9 +2828,13 @@ function App() {
                 <h2>Paperclip skill sync</h2>
                 <p>Publish Zero-Human registry skills into Paperclip native Skills without duplicating existing entries.</p>
               </div>
-              <button onClick={syncPaperclipSkills} disabled={busy}>
-                <RefreshCw size={15} /> Sync skills
-              </button>
+              {zeroHumanControlsVisible ? (
+                <button onClick={syncPaperclipSkills} disabled={busy}>
+                  <RefreshCw size={15} /> Sync skills
+                </button>
+              ) : (
+                <span className="readOnlyChip">Auto assigned</span>
+              )}
             </div>
             <div className="syncSummary">
               <span>{state.paperclipSkillSync.registrySkills} registry skills</span>
@@ -2525,33 +2934,40 @@ function App() {
                 onChange={(event) => setMcpQuery(event.target.value)}
               />
             </label>
-            <div className="mcpImportGrid">
-              <form className="mcpImportBox" onSubmit={importMcpRegistry}>
-                <strong>Import registry URL</strong>
-                <span>Load a JSON feed with `items`, `servers`, or an array of MCP configs.</span>
-                <input
-                  value={mcpRegistryUrl}
-                  placeholder="https://example.com/mcp-registry.json"
-                  onChange={(event) => setMcpRegistryUrl(event.target.value)}
-                />
-                <button disabled={busy || !mcpRegistryUrl.trim()}>
-                  <Download size={15} /> Import registry
-                </button>
-              </form>
-              <form className="mcpImportBox customMcpBox" onSubmit={installCustomMcp}>
-                <strong>Add custom MCP JSON</strong>
-                <span>Paste a single MCP config. Zero-Human will validate, install, and add it to the local marketplace.</span>
-                <textarea
-                  className="customMcpEditor"
-                  value={customMcpDraft}
-                  spellCheck={false}
-                  onChange={(event) => setCustomMcpDraft(event.target.value)}
-                />
-                <button disabled={busy || !customMcpDraft.trim()}>
-                  <Plus size={15} /> Install custom MCP
-                </button>
-              </form>
-            </div>
+            {zeroHumanControlsVisible ? (
+              <div className="mcpImportGrid">
+                <form className="mcpImportBox" onSubmit={importMcpRegistry}>
+                  <strong>Import registry URL</strong>
+                  <span>Load a JSON feed with `items`, `servers`, or an array of MCP configs.</span>
+                  <input
+                    value={mcpRegistryUrl}
+                    placeholder="https://example.com/mcp-registry.json"
+                    onChange={(event) => setMcpRegistryUrl(event.target.value)}
+                  />
+                  <button disabled={busy || !mcpRegistryUrl.trim()}>
+                    <Download size={15} /> Import registry
+                  </button>
+                </form>
+                <form className="mcpImportBox customMcpBox" onSubmit={installCustomMcp}>
+                  <strong>Add custom MCP JSON</strong>
+                  <span>Paste a single MCP config. Zero-Human will validate, install, and add it to the local marketplace.</span>
+                  <textarea
+                    className="customMcpEditor"
+                    value={customMcpDraft}
+                    spellCheck={false}
+                    onChange={(event) => setCustomMcpDraft(event.target.value)}
+                  />
+                  <button disabled={busy || !customMcpDraft.trim()}>
+                    <Plus size={15} /> Install custom MCP
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className="readOnlyNotice">
+                <strong>MCP assignment is observed</strong>
+                <span>Paperclip receives MCP guidance from Hermes/Zero-Human automation. Install and config actions are hidden from the monitor.</span>
+              </div>
+            )}
             {mcpError && <p className="formWarning">{mcpError}</p>}
             {mcpMessage && <p className="formSuccess">{mcpMessage}</p>}
             <div className="mcpCards">
@@ -2567,9 +2983,13 @@ function App() {
                   </div>
                   <div className="mcpCardFooter">
                     <Status value={installedMcpIds.has(item.id) ? "installed" : "available"} />
-                    <button onClick={() => installMcp(item.id)} disabled={busy}>
-                      <Download size={15} /> {installedMcpIds.has(item.id) ? "Reinstall" : "Install"}
-                    </button>
+                    {zeroHumanControlsVisible ? (
+                      <button onClick={() => installMcp(item.id)} disabled={busy}>
+                        <Download size={15} /> {installedMcpIds.has(item.id) ? "Reinstall" : "Install"}
+                      </button>
+                    ) : (
+                      <span className="readOnlyChip">{installedMcpIds.has(item.id) ? "Installed" : "Available"}</span>
+                    )}
                   </div>
                 </article>
               ))}
@@ -2611,19 +3031,27 @@ function App() {
                       className="jsonEditor"
                       value={mcpJsonDraft}
                       spellCheck={false}
+                      readOnly={!zeroHumanControlsVisible}
                       onChange={(event) => setMcpJsonDraft(event.target.value)}
                     />
-                    <div className="mcpActions">
-                      <button onClick={saveMcpJson} disabled={busy}>
-                        <Save size={15} /> Save JSON
-                      </button>
-                      <button onClick={() => testMcp(selectedMcp.id)} disabled={busy}>
-                        <Check size={15} /> Test
-                      </button>
-                      <button onClick={() => updateMcpStatus(selectedMcp, selectedMcp.status === "enabled" ? "disabled" : "enabled")} disabled={busy}>
-                        {selectedMcp.status === "enabled" ? "Disable" : "Enable"}
-                      </button>
-                    </div>
+                    {zeroHumanControlsVisible ? (
+                      <div className="mcpActions">
+                        <button onClick={saveMcpJson} disabled={busy}>
+                          <Save size={15} /> Save JSON
+                        </button>
+                        <button onClick={() => testMcp(selectedMcp.id)} disabled={busy}>
+                          <Check size={15} /> Test
+                        </button>
+                        <button onClick={() => updateMcpStatus(selectedMcp, selectedMcp.status === "enabled" ? "disabled" : "enabled")} disabled={busy}>
+                          {selectedMcp.status === "enabled" ? "Disable" : "Enable"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="readOnlyNotice">
+                        <strong>Read-only JSON</strong>
+                        <span>MCP JSON is displayed for audit only. Runtime assignment is automatic through Paperclip guidance.</span>
+                      </div>
+                    )}
                     {mcpError && <p className="formWarning">{mcpError}</p>}
                     {mcpMessage && <p className="formSuccess">{mcpMessage}</p>}
                   </>
@@ -2714,8 +3142,14 @@ function App() {
                     {task.status === "pending_review" && (
                       <>
                         <button onClick={() => loadDiff(task.id)} disabled={busy}>Diff</button>
-                        <button onClick={() => reject(task.id)} disabled={busy}>Reject</button>
-                        <button onClick={() => approve(task.id)} disabled={busy}><Check size={15} /> Approve</button>
+                        {zeroHumanControlsVisible ? (
+                          <>
+                            <button onClick={() => reject(task.id)} disabled={busy}>Reject</button>
+                            <button onClick={() => approve(task.id)} disabled={busy}><Check size={15} /> Approve</button>
+                          </>
+                        ) : (
+                          <span className="readOnlyChip">Review in Paperclip</span>
+                        )}
                       </>
                     )}
                   </div>
@@ -2750,6 +3184,82 @@ function App() {
                 </li>
               ))}
             </ol>
+          </div>
+          )}
+
+          {activeView === "gateway" && (
+          <div className="panel routerMonitor">
+            <div className="panelHead">
+              <div>
+                <h2>9Router monitor</h2>
+                <p>Observe active combo, provider fallback, failed providers, and token/cost spike guardrails. 9Router remains the gateway source of truth.</p>
+              </div>
+              <RadioTower size={20} />
+            </div>
+            <div className="routerMonitorGrid">
+              <article>
+                <span>Active combo</span>
+                <strong>{state.routerMonitor.activeCombo || "unconfigured"}</strong>
+                <small>{state.routerMonitor.configuredCombos.length} configured combos</small>
+              </article>
+              <article>
+                <span>Requests</span>
+                <strong>{state.routerMonitor.requests.toLocaleString()}</strong>
+                <small>{state.routerMonitor.inputTokens.toLocaleString()} in - {state.routerMonitor.outputTokens.toLocaleString()} out</small>
+              </article>
+              <article>
+                <span>Cost guardrail</span>
+                <strong>{money(state.routerMonitor.costUsd)}</strong>
+                <small>{routerSpike.status}: {routerSpike.highCostRuns} high-cost runs</small>
+              </article>
+            </div>
+            <div className="routerMonitorColumns">
+              <section>
+                <h3>Model distribution</h3>
+                <div className="distributionList">
+                  {state.routerMonitor.modelDistribution.length === 0 && <div className="empty">No configured model routes reported.</div>}
+                  {state.routerMonitor.modelDistribution.map((route, index) => (
+                    <article className={route.active ? "activeRoute" : ""} key={`${route.combo}-${route.provider}-${route.model}-${index}`}>
+                      <div>
+                        <strong>{route.provider}/{route.model}</strong>
+                        <span>{route.combo}{route.active ? " - active" : ""}</span>
+                      </div>
+                      <small>{route.requests.toLocaleString()} requests</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+              <section>
+                <h3>Provider fallback</h3>
+                <div className="providerList">
+                  {state.routerMonitor.providerFallbacks.length === 0 && <div className="empty">No provider routes available.</div>}
+                  {state.routerMonitor.providerFallbacks.map((provider) => (
+                    <article key={provider.provider}>
+                      <div>
+                        <strong>{provider.provider}</strong>
+                        <span>{provider.lastModel ?? "waiting for traffic"}</span>
+                      </div>
+                      <Status value={provider.status} />
+                      <small>{provider.fallbackCount} fallback - {provider.failureCount} failed</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+              <section>
+                <h3>Spike guardrail</h3>
+                <div className={`guardrailBox ${routerSpike.status}`}>
+                  <strong>{routerSpike.status}</strong>
+                  <span>{routerSpike.reason}</span>
+                  <small>Threshold: {routerSpike.thresholdTokens.toLocaleString()} tokens or {money(routerSpike.thresholdCostUsd)}</small>
+                </div>
+                <div className="failedProviderList">
+                  {state.routerMonitor.failedProviders.length === 0 && <small>No failed provider detected by Hermes interventions.</small>}
+                  {state.routerMonitor.failedProviders.map((provider) => (
+                    <small key={provider.provider}>{provider.provider}: {provider.failures} failures - {provider.reason}</small>
+                  ))}
+                </div>
+              </section>
+            </div>
           </div>
           )}
 

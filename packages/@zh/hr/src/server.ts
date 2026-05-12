@@ -115,6 +115,63 @@ type BrainMemorySummary = {
   error?: string;
 };
 type BrainSkillSummary = BrainMemorySummary["skills"][number];
+type HermesAgentBrainPanel = {
+  agentId: string;
+  role: string;
+  executor: string;
+  modelCombo: string;
+  memoryInjected: boolean;
+  memoryNoteCount: number;
+  recentMemory: Array<{ agentId: string; note: string }>;
+  skillsAssigned: string[];
+  mcpAssigned: Array<{ id: string; name: string; status: McpServerConfig["status"]; mandatory: boolean }>;
+  learnedOutcomes: number;
+  failedLearning: number;
+  confidence: number;
+  relevance: number;
+  status: "ready" | "partial" | "missing";
+  lastLearnedAt?: string;
+};
+type RouterMonitor = {
+  ok: boolean;
+  activeCombo: string;
+  configuredCombos: string[];
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  modelDistribution: Array<{
+    combo: string;
+    provider: string;
+    model: string;
+    active: boolean;
+    configured: boolean;
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }>;
+  providerFallbacks: Array<{
+    provider: string;
+    requests: number;
+    fallbackCount: number;
+    failureCount: number;
+    status: "ok" | "fallback" | "failed" | "idle";
+    lastModel?: string;
+  }>;
+  failedProviders: Array<{ provider: string; failures: number; reason: string }>;
+  spikeGuardrail: {
+    status: "ok" | "warning" | "critical";
+    reason: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+    highCostRuns: number;
+    thresholdTokens: number;
+    thresholdCostUsd: number;
+  };
+  updatedAt: string;
+};
 type BudgetOverrides = {
   globalBudgetUsd?: number;
   agentCaps?: Record<string, number>;
@@ -402,12 +459,64 @@ type WorkroomRun = {
 type WorkroomState = {
   ok: boolean;
   companyId?: string;
+  company?: PaperclipCompanyMonitor;
   updatedAt: string;
   activeRuns: number;
   changedFiles: number;
   unavailable: boolean;
   error?: string;
   runs: WorkroomRun[];
+};
+type PaperclipCompanySummary = {
+  id: string;
+  issuePrefix: string;
+  name: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  agentCount: number;
+  activeAgentCount: number;
+  issueCount: number;
+  openIssueCount: number;
+  runCount: number;
+  activeRunCount: number;
+};
+type PaperclipCompanyMonitor = {
+  ok: boolean;
+  paperclipUrl: string;
+  source: "env" | "latest" | "fallback" | "unavailable";
+  selectedCompanyId?: string;
+  selectedIssuePrefix?: string;
+  selectedName?: string;
+  warning?: string;
+  error?: string;
+  duplicateNameWarnings: string[];
+  companies: PaperclipCompanySummary[];
+};
+type MonitoringDiagnosticSeverity = "info" | "warning" | "critical";
+type MonitoringDiagnosticItem = {
+  id: string;
+  severity: MonitoringDiagnosticSeverity;
+  title: string;
+  detail: string;
+  action?: string;
+  href?: string;
+};
+type MonitoringDiagnostics = {
+  ok: boolean;
+  mode: "monitoring_only" | "controls_enabled";
+  generatedAt: string;
+  selectedCompanyId?: string;
+  selectedIssuePrefix?: string;
+  selectedName?: string;
+  items: MonitoringDiagnosticItem[];
+  links: {
+    paperclipDashboard: string;
+    paperclipOrg: string;
+    paperclipIssues: string;
+    routerUsage: string;
+    hermesLogs: string;
+  };
 };
 type AgentIssueDecision = "auto_assign" | "triage" | "approval_required" | "blocked";
 type AgentIssuePolicy = {
@@ -719,7 +828,8 @@ async function upsertZeroHumanPaperclipSkill(
 }
 
 async function resolvePaperclipCompanyId(client: PoolClient): Promise<string> {
-  if (process.env.PAPERCLIP_COMPANY_ID) return process.env.PAPERCLIP_COMPANY_ID;
+  const company = await paperclipCompanyMonitorSnapshotFromClient(client);
+  if (company.selectedCompanyId) return company.selectedCompanyId;
   const companyResult = await client.query<{ id: string }>(
     "select id from companies order by created_at desc, updated_at desc limit 1"
   );
@@ -729,6 +839,267 @@ async function resolvePaperclipCompanyId(client: PoolClient): Promise<string> {
   );
   if (agentResult.rows[0]?.company_id) return agentResult.rows[0].company_id;
   throw new Error("No Paperclip company found. Complete Paperclip onboarding first.");
+}
+
+function numericCount(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string") return Number.parseInt(value, 10) || 0;
+  return 0;
+}
+
+function paperclipCompanyWarnings(rows: PaperclipCompanySummary[], selectedCompanyId?: string): string[] {
+  const warnings: string[] = [];
+  const selected = rows.find((row) => row.id === selectedCompanyId);
+  if (!process.env.PAPERCLIP_COMPANY_ID && rows.length > 1) {
+    warnings.push("PAPERCLIP_COMPANY_ID is not set. Zero-Human is monitoring the latest Paperclip company.");
+  }
+  if (process.env.PAPERCLIP_COMPANY_ID && !selected && rows.length > 0) {
+    warnings.push("PAPERCLIP_COMPANY_ID is set, but that company was not found in the current Paperclip database snapshot.");
+  }
+  const byName = new Map<string, PaperclipCompanySummary[]>();
+  for (const row of rows) {
+    const key = row.name.trim().toLowerCase();
+    const group = byName.get(key) ?? [];
+    group.push(row);
+    byName.set(key, group);
+  }
+  for (const group of byName.values()) {
+    if (group.length > 1) {
+      warnings.push(`Duplicate Paperclip company name "${group[0].name}" detected across ${group.length} records.`);
+    }
+  }
+  return warnings;
+}
+
+async function paperclipCompanyMonitorSnapshotFromClient(client: PoolClient): Promise<PaperclipCompanyMonitor> {
+  const rows = await client.query<{
+    id: string;
+    issue_prefix: string | null;
+    name: string | null;
+    status: string | null;
+    created_at: Date | null;
+    updated_at: Date | null;
+    agent_count: unknown;
+    active_agent_count: unknown;
+    issue_count: unknown;
+    open_issue_count: unknown;
+    run_count: unknown;
+    active_run_count: unknown;
+  }>(
+    `
+    select
+      c.id::text,
+      c.issue_prefix,
+      c.name,
+      c.status,
+      c.created_at,
+      c.updated_at,
+      count(distinct a.id)::int as agent_count,
+      count(distinct a.id) filter (where coalesce(a.status, '') not in ('archived','disabled','terminated'))::int as active_agent_count,
+      count(distinct i.id)::int as issue_count,
+      count(distinct i.id) filter (where coalesce(i.status, '') not in ('done','cancelled','closed'))::int as open_issue_count,
+      count(distinct r.id)::int as run_count,
+      count(distinct r.id) filter (where coalesce(r.status, '') in ('queued','running'))::int as active_run_count
+    from companies c
+    left join agents a on a.company_id = c.id
+    left join issues i on i.company_id = c.id
+    left join heartbeat_runs r on r.company_id = c.id
+    group by c.id, c.issue_prefix, c.name, c.status, c.created_at, c.updated_at
+    order by c.updated_at desc nulls last, c.created_at desc nulls last
+    limit 20
+    `
+  );
+  const companies = rows.rows.map((row) => ({
+    id: row.id,
+    issuePrefix: row.issue_prefix ?? "",
+    name: row.name ?? "Unnamed company",
+    status: row.status ?? "unknown",
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    agentCount: numericCount(row.agent_count),
+    activeAgentCount: numericCount(row.active_agent_count),
+    issueCount: numericCount(row.issue_count),
+    openIssueCount: numericCount(row.open_issue_count),
+    runCount: numericCount(row.run_count),
+    activeRunCount: numericCount(row.active_run_count)
+  }));
+  const envCompanyId = process.env.PAPERCLIP_COMPANY_ID;
+  const selected = (envCompanyId ? companies.find((company) => company.id === envCompanyId) : undefined) ?? companies[0];
+  const warningList = paperclipCompanyWarnings(companies, selected?.id ?? envCompanyId);
+  return {
+    ok: Boolean(selected?.id ?? envCompanyId),
+    paperclipUrl: paperclipUrl(),
+    source: envCompanyId ? "env" : selected ? "latest" : "unavailable",
+    selectedCompanyId: selected?.id ?? envCompanyId,
+    selectedIssuePrefix: selected?.issuePrefix,
+    selectedName: selected?.name,
+    warning: warningList[0],
+    duplicateNameWarnings: warningList,
+    companies
+  };
+}
+
+async function paperclipCompanyMonitorSnapshot(): Promise<PaperclipCompanyMonitor> {
+  if (!paperclipDatabaseUrl) {
+    return {
+      ok: false,
+      paperclipUrl: paperclipUrl(),
+      source: "unavailable",
+      error: "PAPERCLIP_DATABASE_URL is not configured.",
+      duplicateNameWarnings: [],
+      companies: []
+    };
+  }
+  const client = await getPaperclipPool().connect();
+  try {
+    return await paperclipCompanyMonitorSnapshotFromClient(client);
+  } catch (error) {
+    return {
+      ok: false,
+      paperclipUrl: paperclipUrl(),
+      source: "unavailable",
+      error: (error as Error).message,
+      duplicateNameWarnings: [],
+      companies: []
+    };
+  } finally {
+    client.release();
+  }
+}
+
+function serviceBaseUrl(value: string | undefined, fallback: string): string {
+  return value?.trim() ? value.replace(/\/$/, "") : fallback;
+}
+
+function paperclipCompanyPath(company: PaperclipCompanyMonitor, suffix: "dashboard" | "org" | "issues"): string {
+  const prefix = company.selectedIssuePrefix ? `/${company.selectedIssuePrefix}` : "";
+  return `${company.paperclipUrl}${prefix}/${suffix}`;
+}
+
+function monitoringDiagnosticsSnapshot(company: PaperclipCompanyMonitor): MonitoringDiagnostics {
+  const items: MonitoringDiagnosticItem[] = [];
+  const routerBaseUrl = serviceBaseUrl(config.infrastructure.services?.router_url, "http://localhost:20128");
+  const hermesBaseUrl = serviceBaseUrl(config.infrastructure.services?.brain_url, "http://localhost:9119");
+  const selected = company.companies.find((row) => row.id === company.selectedCompanyId);
+
+  if (zeroHumanControlsEnabled) {
+    items.push({
+      id: "monitoring-boundary-override",
+      severity: "warning",
+      title: "Zero-Human controls are enabled",
+      detail: "ZH_ENABLE_ZERO_HUMAN_CONTROLS=true allows Studio mutating endpoints. This should only be used for maintenance.",
+      action: "Keep daily company control in Paperclip."
+    });
+  } else {
+    items.push({
+      id: "monitoring-boundary",
+      severity: "info",
+      title: "Monitoring-only mode",
+      detail: "Zero-Human Studio observes Paperclip, Hermes, 9Router, repositories, and Codex run output without mutating the company.",
+      action: "Create issues, hire agents, assign work, and set dispositions in Paperclip."
+    });
+  }
+
+  if (!paperclipDatabaseUrl) {
+    items.push({
+      id: "paperclip-database-url",
+      severity: "critical",
+      title: "Paperclip database is not connected",
+      detail: "PAPERCLIP_DATABASE_URL is missing, so Zero-Human cannot monitor the real Paperclip company state.",
+      action: "Copy .env.example to .env and point PAPERCLIP_DATABASE_URL at the Paperclip Postgres service."
+    });
+  }
+
+  if (!company.ok) {
+    items.push({
+      id: "paperclip-company-unavailable",
+      severity: "critical",
+      title: "No active Paperclip company selected",
+      detail: company.error ?? "Paperclip has no company record available for monitoring.",
+      action: "Complete Paperclip onboarding or set PAPERCLIP_COMPANY_ID to the intended company."
+    });
+  }
+
+  if (company.companies.length === 0) {
+    items.push({
+      id: "paperclip-empty-database",
+      severity: "critical",
+      title: "Paperclip data set is empty",
+      detail: "Zero-Human sees no companies, agents, issues, or runs in the connected Paperclip database.",
+      action: "Open Paperclip, finish onboarding, or verify the mounted Postgres volume."
+    });
+  }
+
+  for (const warning of company.duplicateNameWarnings) {
+    items.push({
+      id: `paperclip-warning-${items.length}`,
+      severity: "warning",
+      title: "Paperclip company selection warning",
+      detail: warning,
+      action: "Set PAPERCLIP_COMPANY_ID for deterministic monitoring when multiple companies exist."
+    });
+  }
+
+  if (selected) {
+    if (selected.agentCount === 0) {
+      items.push({
+        id: "paperclip-no-agents",
+        severity: "warning",
+        title: "No Paperclip agents found",
+        detail: `${selected.name} has no agents in the monitored database snapshot.`,
+        action: "Create the company agents in Paperclip before expecting execution activity.",
+        href: paperclipCompanyPath(company, "org")
+      });
+    }
+    if (selected.issueCount === 0) {
+      items.push({
+        id: "paperclip-no-issues",
+        severity: "warning",
+        title: "No Paperclip issues found",
+        detail: `${selected.name} has no issues, so there is no execution queue to monitor.`,
+        action: "Create work in Paperclip; Zero-Human will observe it here.",
+        href: paperclipCompanyPath(company, "issues")
+      });
+    }
+    if (selected.openIssueCount > 25) {
+      items.push({
+        id: "paperclip-open-issue-load",
+        severity: "warning",
+        title: "High open issue load",
+        detail: `${selected.name} has ${selected.openIssueCount} open issues. Monitoring may show many blockers and retries.`,
+        action: "Use Paperclip triage to close, delegate, or merge stale recovery issues.",
+        href: paperclipCompanyPath(company, "issues")
+      });
+    }
+    if (selected.activeRunCount > 0) {
+      items.push({
+        id: "paperclip-live-runs",
+        severity: "info",
+        title: "Paperclip runs are live",
+        detail: `${selected.activeRunCount} run(s) are currently queued or running for ${selected.name}.`,
+        action: "Watch Execution Monitor for transcripts, root errors, changed files, and artifacts.",
+        href: paperclipCompanyPath(company, "dashboard")
+      });
+    }
+  }
+
+  return {
+    ok: items.every((item) => item.severity !== "critical"),
+    mode: zeroHumanControlsEnabled ? "controls_enabled" : "monitoring_only",
+    generatedAt: new Date().toISOString(),
+    selectedCompanyId: company.selectedCompanyId,
+    selectedIssuePrefix: company.selectedIssuePrefix,
+    selectedName: company.selectedName,
+    items,
+    links: {
+      paperclipDashboard: paperclipCompanyPath(company, "dashboard"),
+      paperclipOrg: paperclipCompanyPath(company, "org"),
+      paperclipIssues: paperclipCompanyPath(company, "issues"),
+      routerUsage: `${routerBaseUrl}/dashboard/usage`,
+      hermesLogs: `${hermesBaseUrl}/logs`
+    }
+  };
 }
 
 async function resolvePaperclipProjectId(client: PoolClient, companyId: string): Promise<string> {
@@ -2028,6 +2399,189 @@ function publicPaperclipHermesInterventionReport(): PaperclipHermesInterventionR
   return {
     ...report,
     details: report.details.slice(0, 20)
+  };
+}
+
+function assignedMcpForAgentPanel(agent: Agent, syncRecord?: PaperclipAgentSyncRecord): HermesAgentBrainPanel["mcpAssigned"] {
+  const desiredIds = new Set([
+    ...(syncRecord?.desiredMcpServers ?? []).map((server) => server.id),
+    ...enabledMcpForAgent(agent).map((server) => server.id)
+  ]);
+  return Array.from(desiredIds)
+    .map((id) => {
+      const server = mcpServers.get(id);
+      return {
+        id,
+        name: server?.name ?? syncRecord?.desiredMcpServers.find((item) => item.id === id)?.name ?? id,
+        status: server?.status ?? "available",
+        mandatory: /sequential|thinking/i.test(`${id} ${server?.name ?? ""}`)
+      };
+    })
+    .sort((a, b) => Number(b.mandatory) - Number(a.mandatory) || a.name.localeCompare(b.name));
+}
+
+function buildHermesAgentBrainPanels(memory: BrainMemorySummary, sync: PaperclipSyncState): HermesAgentBrainPanel[] {
+  const syncByAgent = new Map(sync.records.map((record) => [record.agentId, record]));
+  const notesByAgent = new Map<string, Array<{ agentId: string; note: string }>>();
+  for (const note of memory.recentNotes) {
+    const key = slug(note.agentId);
+    notesByAgent.set(key, [...(notesByAgent.get(key) ?? []), note]);
+  }
+
+  return Array.from(agents.values())
+    .map((agent) => {
+      const syncRecord = syncByAgent.get(agent.id);
+      const skillsAssigned = Array.from(new Set([
+        ...desiredSkillsForAgentProfile(agent),
+        ...(syncRecord?.desiredSkills ?? []),
+        ...agent.skills
+      ])).sort((a, b) => a.localeCompare(b));
+      const learnedSkills = memory.skills.filter((skill) => slug(skill.agentId) === slug(agent.id));
+      const relevantLearnedSkills = memory.skills.filter((skill) => {
+        const classification = classifyHermesLearnedSkill(skill);
+        return classification.roles.includes(agent.role);
+      });
+      const recentMemory = [
+        ...(notesByAgent.get(slug(agent.id)) ?? []),
+        ...memory.recentNotes.filter((note) => {
+          const words = searchableWords(`${note.agentId} ${note.note}`);
+          return words.has(agent.role) || agent.skills.some((skill) => words.has(skill));
+        })
+      ].slice(0, 4);
+      const mcpAssigned = assignedMcpForAgentPanel(agent, syncRecord);
+      const confidenceSource = learnedSkills.length ? learnedSkills : relevantLearnedSkills;
+      const averageConfidence = confidenceSource.length
+        ? confidenceSource.reduce((sum, skill) => sum + skill.confidence, 0) / confidenceSource.length
+        : 0;
+      const mandatoryMcpReady = mcpAssigned.some((server) => server.mandatory && ["enabled", "installed"].includes(server.status));
+      const roleSkillCoverage = skillsAssigned.length
+        ? Math.min(1, skillsAssigned.filter((skill) => roleSkillCatalog[agent.role].includes(skill) || agent.skills.includes(skill)).length / Math.max(1, roleSkillCatalog[agent.role].length))
+        : 0;
+      const relevance = Math.min(1, (roleSkillCoverage * 0.45) + (mcpAssigned.length ? 0.25 : 0) + (mandatoryMcpReady ? 0.15 : 0) + (recentMemory.length ? 0.15 : 0));
+      const failedLearning = publicPaperclipHermesInterventionReport().details.filter((detail) =>
+        detail.assignee && slug(detail.assignee) === slug(agent.id) && ["failed_run", "high_churn", "missing_disposition", "blocked_issue"].includes(detail.trigger)
+      ).length;
+      const memoryInjected = Boolean(
+        memory.ok
+        && (recentMemory.length || learnedSkills.length || relevantLearnedSkills.length || syncRecord?.status === "synced")
+      );
+      const status: HermesAgentBrainPanel["status"] = memoryInjected && skillsAssigned.length && mcpAssigned.length
+        ? "ready"
+        : skillsAssigned.length || mcpAssigned.length || recentMemory.length
+          ? "partial"
+          : "missing";
+
+      return {
+        agentId: agent.id,
+        role: agent.role,
+        executor: agent.executor,
+        modelCombo: agent.modelCombo,
+        memoryInjected,
+        memoryNoteCount: recentMemory.length,
+        recentMemory,
+        skillsAssigned,
+        mcpAssigned,
+        learnedOutcomes: learnedSkills.reduce((sum, skill) => sum + skill.runs, 0),
+        failedLearning,
+        confidence: Number(Math.min(1, averageConfidence).toFixed(3)),
+        relevance: Number(relevance.toFixed(3)),
+        status,
+        lastLearnedAt: learnedSkills.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]?.updatedAt
+      };
+    })
+    .sort((a, b) =>
+      a.status.localeCompare(b.status)
+      || b.relevance - a.relevance
+      || a.agentId.localeCompare(b.agentId)
+    );
+}
+
+function buildRouterMonitor(interventions: PaperclipHermesInterventionReport): RouterMonitor {
+  const comboEntries = Object.entries(config.gateway.combos ?? {}) as Array<[string, Array<{ provider: string; model: string }>]>;
+  const configuredCombos = comboEntries.map(([combo]) => combo);
+  const activeCombo = routerComboPolicy().defaultCombo || configuredCombos[0] || "unconfigured";
+  const activeRoutes = new Set((config.gateway.combos?.[activeCombo] ?? []).map((route) => `${route.provider}/${route.model}`));
+  const routeRows = comboEntries.flatMap(([combo, routes]) =>
+    routes.map((route) => ({
+      combo,
+      provider: route.provider,
+      model: route.model,
+      active: combo === activeCombo || activeRoutes.has(`${route.provider}/${route.model}`),
+      configured: true,
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0
+    }))
+  );
+  const providers = new Map<string, RouterMonitor["providerFallbacks"][number]>();
+  for (const route of routeRows) {
+    const current = providers.get(route.provider) ?? {
+      provider: route.provider,
+      requests: 0,
+      fallbackCount: 0,
+      failureCount: 0,
+      status: "idle" as const,
+      lastModel: route.model
+    };
+    current.requests += route.active ? routerMetrics.requests : 0;
+    current.status = route.active ? "ok" : current.status;
+    current.lastModel = route.active ? route.model : current.lastModel;
+    providers.set(route.provider, current);
+  }
+
+  for (const detail of interventions.details) {
+    const text = `${detail.metric ?? ""} ${detail.reason ?? ""}`.toLowerCase();
+    for (const provider of providers.values()) {
+      if (!text.includes(provider.provider.toLowerCase())) continue;
+      if (detail.trigger === "failed_run") {
+        provider.failureCount += 1;
+        provider.status = "failed";
+      }
+      if (detail.trigger === "high_cost_run" || /fallback|retry|provider/i.test(text)) {
+        provider.fallbackCount += 1;
+        if (provider.status !== "failed") provider.status = "fallback";
+      }
+    }
+  }
+
+  const thresholdCostUsd = Math.max(1, companyState.budget_usd * 0.1);
+  const highCost = interventions.highCostRuns;
+  const spikeStatus: RouterMonitor["spikeGuardrail"]["status"] =
+    routerMetrics.inputTokens >= paperclipHermesHighCostTokenThreshold * 3 || routerMetrics.costUsd >= thresholdCostUsd
+      ? "critical"
+      : highCost > 0 || routerMetrics.inputTokens >= paperclipHermesHighCostTokenThreshold
+        ? "warning"
+        : "ok";
+
+  return {
+    ok: configuredCombos.length > 0,
+    activeCombo,
+    configuredCombos,
+    requests: routerMetrics.requests,
+    inputTokens: routerMetrics.inputTokens,
+    outputTokens: routerMetrics.outputTokens,
+    costUsd: Number(routerMetrics.costUsd.toFixed(4)),
+    modelDistribution: routeRows.slice(0, 18),
+    providerFallbacks: Array.from(providers.values()).sort((a, b) =>
+      b.requests - a.requests || b.failureCount - a.failureCount || a.provider.localeCompare(b.provider)
+    ),
+    failedProviders: Array.from(providers.values())
+      .filter((provider) => provider.failureCount > 0)
+      .map((provider) => ({ provider: provider.provider, failures: provider.failureCount, reason: "Recent Paperclip/Hermes intervention reported provider failure." })),
+    spikeGuardrail: {
+      status: spikeStatus,
+      reason: spikeStatus === "ok"
+        ? "No token/cost spike detected from Zero-Human events."
+        : "Hermes observed high-cost execution or aggregate gateway usage above guardrail.",
+      inputTokens: routerMetrics.inputTokens,
+      outputTokens: routerMetrics.outputTokens,
+      costUsd: Number(routerMetrics.costUsd.toFixed(4)),
+      highCostRuns: highCost,
+      thresholdTokens: paperclipHermesHighCostTokenThreshold,
+      thresholdCostUsd
+    },
+    updatedAt: new Date().toISOString()
   };
 }
 
@@ -4313,9 +4867,20 @@ function commandStatusFromTerminal(status: string, lines: string[]): string {
 
 function rootErrorFromRun(status: string, lines: string[], gitError?: string): string | undefined {
   if (gitError) return gitError;
-  const errorLine = [...lines].reverse().find((line) => /error|failed|not found|timeout|unauthorized|no active credentials|handshake not finished/i.test(line));
-  if (errorLine) return errorLine.replace(/^\[[^\]]+\]\s*/, "").slice(0, 280);
-  if (["failed", "error", "cancelled"].includes(status)) return `Run ended with status ${status}.`;
+  const terminalStatus = status.toLowerCase();
+  const failedStatuses = new Set(["failed", "error", "cancelled"]);
+  if (!failedStatuses.has(terminalStatus)) return undefined;
+  const reversed = [...lines].reverse();
+  const structuredErrorLine = reversed.find(
+    (line) =>
+      /^\[(stderr|error|failed|exception|result)\]/i.test(line) &&
+      /error|failed|not found|timeout|unauthorized|no active credentials|handshake not finished/i.test(line)
+  );
+  const hardFailureLine =
+    structuredErrorLine ??
+    reversed.find((line) => /no active credentials|unauthorized|handshake not finished|timeout|fatal:/i.test(line));
+  if (hardFailureLine) return hardFailureLine.replace(/^\[[^\]]+\]\s*/, "").slice(0, 280);
+  if (failedStatuses.has(terminalStatus)) return `Run ended with status ${status}.`;
   return undefined;
 }
 
@@ -4360,12 +4925,19 @@ function parseGitStatus(status: string): WorkroomFileChange[] {
   return status
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
-    .filter(Boolean)
+    .filter((line) => /^[ MADRCU?!]{1,2}\s+/.test(line))
     .slice(0, 80)
     .map((line) => ({
       status: line.slice(0, 2).trim() || "?",
       path: line.slice(3).trim() || line
     }));
+}
+
+function gitOutputLooksLikeFailure(output: string): string | undefined {
+  const line = arrayFromText(output).find((entry) =>
+    /fatal:|not a git repository|stopping at filesystem boundary|not readable|permission denied/i.test(entry)
+  );
+  return line?.slice(0, 280);
 }
 
 async function workspaceGitSnapshot(cwd: string | undefined): Promise<{
@@ -4380,6 +4952,10 @@ async function workspaceGitSnapshot(cwd: string | undefined): Promise<{
       try {
         await runPaperclipGit(["rev-parse", "--is-inside-work-tree"], cwd);
         const status = await runPaperclipGit(["status", "--short"], cwd);
+        const statusFailure = gitOutputLooksLikeFailure(status);
+        if (statusFailure) {
+          return { workspaceReady: false, fileChanges: [], diffStat: [], gitError: statusFailure };
+        }
         const diffStat = await runPaperclipGit(["diff", "--stat"], cwd).catch(() => "");
         return {
           workspaceReady: true,
@@ -4400,6 +4976,10 @@ async function workspaceGitSnapshot(cwd: string | undefined): Promise<{
   try {
     await runGit(["rev-parse", "--is-inside-work-tree"], cwd);
     const status = await runGit(["status", "--short"], cwd);
+    const statusFailure = gitOutputLooksLikeFailure(status);
+    if (statusFailure) {
+      return { workspaceReady: false, fileChanges: [], diffStat: [], gitError: statusFailure };
+    }
     const diffStat = await runGit(["diff", "--stat"], cwd).catch(() => "");
     return {
       workspaceReady: true,
@@ -4408,7 +4988,7 @@ async function workspaceGitSnapshot(cwd: string | undefined): Promise<{
     };
   } catch (error) {
     return {
-      workspaceReady: true,
+      workspaceReady: false,
       fileChanges: [],
       diffStat: [],
       gitError: (error as Error).message
@@ -4431,7 +5011,12 @@ async function paperclipWorkroomState(): Promise<WorkroomState> {
 
   const client = await getPaperclipPool().connect();
   try {
-    const companyId = await resolvePaperclipCompanyId(client);
+    const company = await paperclipCompanyMonitorSnapshotFromClient(client);
+    if (!company.selectedCompanyId) {
+      throw new Error(company.error ?? "No Paperclip company found. Complete Paperclip onboarding first.");
+    }
+    const companyId = company.selectedCompanyId;
+    state.company = company;
     state.companyId = companyId;
     const runs = await client.query<{
       id: string;
@@ -4897,18 +5482,21 @@ app.get("/api/paperclip/sync", (_req, res) => {
 });
 
 app.post("/api/paperclip/sync", (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "prepare_paperclip_manifest")) return;
   const state = refreshPaperclipSyncState();
   addEvent("paperclip_sync_manifest", `Prepared Paperclip owner manifest for ${state.records.length} agents.`);
   res.json(state);
 });
 
 app.delete("/api/paperclip/sync", (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "reset_paperclip_manifest")) return;
   const state = resetPaperclipSyncState();
   addEvent("paperclip_sync_reset", "Cleared the Zero-Human Paperclip owner manifest.");
   res.json(state);
 });
 
 app.post("/api/paperclip/sync/:agentId/applied", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "mark_paperclip_manifest_applied")) return;
   try {
     const state = markPaperclipAgentSynced(req.params.agentId, typeof req.body?.paperclipAgentId === "string" ? req.body.paperclipAgentId : undefined);
     addEvent("paperclip_agent_synced", `Marked ${req.params.agentId} as applied in Paperclip.`);
@@ -4972,6 +5560,7 @@ app.get("/api/paperclip/hermes/sync", (_req, res) => {
 });
 
 app.post("/api/paperclip/hermes/sync", async (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "manual_hermes_bridge_sync")) return;
   const report = await syncHermesBridgeToPaperclip();
   addEvent(
     "paperclip_hermes_bridge",
@@ -4987,6 +5576,7 @@ app.get("/api/paperclip/hermes/interventions", (_req, res) => {
 });
 
 app.post("/api/paperclip/hermes/interventions/scan", async (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "manual_hermes_intervention_scan")) return;
   const report = await scanPaperclipHermesInterventions();
   addEvent(
     "paperclip_hermes_live_brain",
@@ -5030,6 +5620,7 @@ app.put("/api/issue-policies/:role", (req, res) => {
 });
 
 app.post("/api/agent-issues/evaluate", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "evaluate_issue_policy")) return;
   try {
     const { agentId, title, description, type, priority } = req.body as {
       agentId?: string;
@@ -5085,8 +5676,16 @@ app.get("/api/workroom/stream", async (req, res) => {
 async function buildOwnerStateSnapshot() {
   const totalAgentBudget = Array.from(agents.values()).reduce((sum, agent) => sum + agent.maxBudgetUsd, 0);
   const spent = currentSpend();
-  const [health, memory] = await Promise.all([serviceHealth(), brainMemoryStatus()]);
+  const [health, memory, paperclipCompany] = await Promise.all([
+    serviceHealth(),
+    brainMemoryStatus(),
+    paperclipCompanyMonitorSnapshot()
+  ]);
   const paperclipSync = loadPaperclipSyncState();
+  const monitoringDiagnostics = monitoringDiagnosticsSnapshot(paperclipCompany);
+  const paperclipHermesInterventions = publicPaperclipHermesInterventionReport();
+  const hermesAgentMemory = buildHermesAgentBrainPanels(memory, paperclipSync);
+  const routerMonitor = buildRouterMonitor(paperclipHermesInterventions);
   const memorySkills = memory.skills.map((skill) => ({
     agentId: skill.agentId,
     skill: skill.skill,
@@ -5114,6 +5713,10 @@ async function buildOwnerStateSnapshot() {
     routerMetrics,
     serviceHealth: health,
     brainMemory: memory,
+    hermesAgentMemory,
+    routerMonitor,
+    paperclipCompany,
+    monitoringDiagnostics,
     skillProgress: mergedSkillProgress,
     alerts,
     upstreams: upstreamStatus(),
@@ -5123,7 +5726,7 @@ async function buildOwnerStateSnapshot() {
     paperclipRepositorySync: publicPaperclipRepositorySyncReport(),
     paperclipChatSignals: publicPaperclipChatSignalReport(),
     paperclipHermesBridge: publicPaperclipHermesBridgeReport(),
-    paperclipHermesInterventions: publicPaperclipHermesInterventionReport(),
+    paperclipHermesInterventions,
     issuePolicies: publicIssuePolicies(),
     mcpMarketplace: listMcpMarketplace(),
     mcpServers: publicMcpServers(),
@@ -5252,6 +5855,7 @@ app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
 });
 
 app.post("/api/skills/import-repo", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "import_repository_skills")) return;
   const { repositoryId, path: skillPath } = (req.body ?? {}) as { repositoryId?: string; path?: string };
   try {
     const repository = getRepository(repositoryId);
@@ -5266,6 +5870,7 @@ app.post("/api/skills/import-repo", async (req, res) => {
 });
 
 app.post("/api/mcp/install", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "install_mcp_server")) return;
   const { marketplaceId } = (req.body ?? {}) as { marketplaceId?: string };
   const item = listMcpMarketplace().find((entry) => entry.id === marketplaceId);
   if (!item) return res.status(404).json({ error: "MCP marketplace item not found" });
@@ -5296,6 +5901,7 @@ app.post("/api/mcp/install", (req, res) => {
 });
 
 app.post("/api/mcp/custom", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "install_custom_mcp_server")) return;
   try {
     const now = new Date().toISOString();
     const parsed = normalizeMcpMarketplaceItem(req.body);
@@ -5319,6 +5925,7 @@ app.post("/api/mcp/custom", (req, res) => {
 });
 
 app.post("/api/mcp/marketplace/import-url", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "import_mcp_marketplace_registry")) return;
   const { url } = (req.body ?? {}) as { url?: string };
   const registryUrl = url?.trim() ?? "";
   if (!/^https?:\/\//i.test(registryUrl)) return res.status(400).json({ error: "Registry URL must start with http:// or https://" });
@@ -5344,6 +5951,7 @@ app.post("/api/mcp/marketplace/import-url", async (req, res) => {
 });
 
 app.put("/api/mcp/:serverId", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "update_mcp_server")) return;
   const existing = mcpServers.get(req.params.serverId);
   if (!existing) return res.status(404).json({ error: "MCP server not found" });
   const next = { ...existing, ...(req.body ?? {}), id: existing.id, updatedAt: new Date().toISOString() } as McpServerConfig;
@@ -5360,6 +5968,7 @@ app.put("/api/mcp/:serverId", (req, res) => {
 });
 
 app.post("/api/mcp/:serverId/test", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "test_mcp_server")) return;
   const server = mcpServers.get(req.params.serverId);
   if (!server) return res.status(404).json({ error: "MCP server not found" });
   try {
