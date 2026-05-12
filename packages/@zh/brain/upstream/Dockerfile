@@ -73,8 +73,12 @@ RUN chmod -R a+rX /opt/hermes
 # If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
 
 # ---------- Python virtualenv ----------
+# Keep the container build on the Hermes capabilities Zero-Human actually uses.
+# The upstream [all] extra pulls every optional provider and can fail when a
+# non-critical provider package is temporarily unavailable.
+ARG HERMES_DOCKER_EXTRAS="web,cli,pty,mcp,cron,honcho,acp"
 RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
+    uv pip install --no-cache-dir -e ".[${HERMES_DOCKER_EXTRAS}]"
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

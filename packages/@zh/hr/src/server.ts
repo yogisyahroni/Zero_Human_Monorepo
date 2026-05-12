@@ -291,13 +291,16 @@ type PaperclipHermesBridgeReport = {
   protocolSkillSynced: boolean;
   agentsScanned: number;
   agentsPatched: number;
+  learningSkillsScanned: number;
+  learningSkillsClassified: number;
+  learningSkillsAssigned: number;
   memoryNotesWritten: number;
   unavailable: boolean;
   details: Array<{
     agentId?: string;
     agentName?: string;
     role?: string;
-    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "hierarchy_patched" | "duplicate_detected" | "memory_written" | "skipped";
+    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "hierarchy_patched" | "duplicate_detected" | "learning_skill_assigned" | "learning_skill_already_assigned" | "memory_written" | "skipped";
     reason: string;
   }>;
   error?: string;
@@ -616,15 +619,18 @@ function fallbackPaperclipSkillName(skillId: string): string {
 function fallbackPaperclipSkillMarkdown(skillId: string, role?: AgentRole): string {
   const slug = paperclipSkillSlug(skillId);
   const name = fallbackPaperclipSkillName(skillId);
+  const isHermesLearned = skillId.startsWith("hermes_learned_");
   return [
     "---",
     `name: ${slug}`,
-    `description: Zero-Human role skill${role ? ` for ${role}` : ""}.`,
+    `description: ${isHermesLearned ? "Hermes learned permanent skill" : "Zero-Human role skill"}${role ? ` for ${role}` : ""}.`,
     "---",
     "",
     `# ${name}`,
     "",
-    "This skill is managed by Zero-Human Studio and assigned from the role map.",
+    isHermesLearned
+      ? "This skill was learned by Hermes memory from successful agent work and is assigned automatically by Zero-Human Studio."
+      : "This skill is managed by Zero-Human Studio and assigned from the role map.",
     "",
     "## Role Fit",
     "",
@@ -636,7 +642,9 @@ function fallbackPaperclipSkillMarkdown(skillId: string, role?: AgentRole): stri
     "",
     "## Operating Rule",
     "",
-    "Use this skill only when the current task needs this capability. Prefer the Hermes Operating Protocol before broad exploration."
+    isHermesLearned
+      ? "Treat this as permanent company learning. Use it when the current task matches the role or capability, then finish with ZH_OUTCOME so Hermes can refine confidence."
+      : "Use this skill only when the current task needs this capability. Prefer the Hermes Operating Protocol before broad exploration."
   ].join("\n");
 }
 
@@ -841,6 +849,8 @@ const hermesProtocolSkillKey = "zero-human/hermes-operating-protocol";
 const hermesProtocolSkillSlug = "hermes-operating-protocol";
 const maxRegistrySkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_REGISTRY_SKILLS_PER_AGENT ?? 8));
 const maxManualPaperclipSkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_MANUAL_PAPERCLIP_SKILLS_PER_AGENT ?? 4));
+const maxHermesLearnedSkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_HERMES_LEARNED_SKILLS_PER_AGENT ?? 6));
+const minHermesLearnedSkillConfidence = Math.max(0, Number(process.env.ZH_MIN_HERMES_LEARNED_SKILL_CONFIDENCE ?? 0.35));
 
 function heartbeatConcurrencyForRole(role: string): number {
   return role.toLowerCase() === "cto" ? 2 : 1;
@@ -1391,6 +1401,9 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
     protocolSkillSynced: false,
     agentsScanned: 0,
     agentsPatched: 0,
+    learningSkillsScanned: 0,
+    learningSkillsClassified: 0,
+    learningSkillsAssigned: 0,
     memoryNotesWritten: 0,
     unavailable: false,
     details: [],
@@ -1404,11 +1417,14 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
   }
 
   const memory = await brainMemoryStatus();
+  const learnedSkillClassifications = hermesLearnedSkillClassifications(memory);
   const markdown = hermesOperatingProtocolMarkdown(memory);
   const client = await getPaperclipPool().connect();
   try {
     const companyId = await resolvePaperclipCompanyId(client);
     report.companyId = companyId;
+    report.learningSkillsScanned = memory.skills.length;
+    report.learningSkillsClassified = learnedSkillClassifications.length;
     await client.query("begin");
     await client.query(
       `insert into company_skills
@@ -1490,8 +1506,14 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         ? syncValue.desiredSkills.map(String).filter(Boolean)
         : [];
       const zeroHumanAgent = findZeroHumanAgentForPaperclipAgent(row);
-      const desiredZeroHumanSkillIds = desiredSkillIdsForPaperclipAgent(row, zeroHumanAgent);
+      const learnedSkillAssignments = hermesLearnedSkillIdsForPaperclipAgent(learnedSkillClassifications, row, zeroHumanAgent);
+      const desiredZeroHumanSkillIds = Array.from(new Set([
+        ...desiredSkillIdsForPaperclipAgent(row, zeroHumanAgent),
+        ...learnedSkillAssignments.map((assignment) => assignment.skillId)
+      ])).sort();
       const zeroHumanSkillKeys = desiredZeroHumanSkillIds.map(zeroHumanPaperclipSkillKey);
+      const learnedSkillKeys = learnedSkillAssignments.map((assignment) => zeroHumanPaperclipSkillKey(assignment.skillId));
+      report.learningSkillsAssigned += learnedSkillAssignments.length;
       const nativeSkillKeys = paperclipNativeDesiredSkillsForRole(row);
       const preservedManualSkills = existingDesired
         .filter((skill) =>
@@ -1510,6 +1532,7 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       const desiredTitle = canonicalRole ? canonicalTitleForPaperclipRole(canonicalRole) : (row.title ?? "");
       const hierarchyChanged = Boolean(canonicalRole)
         && ((row.reports_to ?? null) !== (desiredReportsTo ?? null) || (row.title ?? "") !== desiredTitle);
+      const relevantMemoryNotes = hermesMemoryNotesForPaperclipAgent(memory, row, zeroHumanAgent);
       const desiredSkills = Array.from(new Set([
         hermesProtocolSkillKey,
         ...nativeSkillKeys,
@@ -1543,9 +1566,18 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
           role: row.role,
           action: "agent_already_ready",
           reason: zeroHumanAgent
-            ? `Agent already has Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role skills, and ${desiredMcpServers.length} MCP servers selected.`
+            ? `Agent already has Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role/learned skills (${learnedSkillKeys.length} from Hermes memory), and ${desiredMcpServers.length} MCP servers selected.`
             : `Agent already has Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers selected. No matching Zero-Human role was found for extra skill mapping.`
         });
+        if (learnedSkillAssignments.length > 0) {
+          report.details.push({
+            agentId: row.id,
+            agentName: row.name,
+            role: row.role,
+            action: "learning_skill_already_assigned",
+            reason: `Hermes memory mapped ${learnedSkillAssignments.length} permanent learned skills to this agent: ${learnedSkillAssignments.map((assignment) => assignment.skill.skill).slice(0, 4).join(", ")}.`
+          });
+        }
         continue;
       }
       for (const skillId of desiredZeroHumanSkillIds) {
@@ -1562,6 +1594,21 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
           source: "zero-human-role-map",
           syncedAt: report.createdAt,
           servers: desiredMcpServers
+        },
+        zeroHumanMemorySync: {
+          source: "hermes-live-brain",
+          syncedAt: report.createdAt,
+          learnedSkills: learnedSkillAssignments.map((assignment) => ({
+            skillId: assignment.skillId,
+            key: zeroHumanPaperclipSkillKey(assignment.skillId),
+            sourceAgentId: assignment.skill.agentId,
+            skill: assignment.skill.skill,
+            roles: assignment.roles,
+            runs: assignment.skill.runs,
+            confidence: assignment.skill.confidence,
+            updatedAt: assignment.skill.updatedAt
+          })),
+          recentNotes: relevantMemoryNotes
         }
       };
       await client.query(
@@ -1584,9 +1631,18 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         role: row.role,
         action: "agent_patched",
         reason: zeroHumanAgent
-          ? `Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role skills, and ${desiredMcpServers.length} MCP servers selected from ${zeroHumanAgent.id}.`
+          ? `Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role/learned skills (${learnedSkillKeys.length} from Hermes memory), and ${desiredMcpServers.length} MCP servers selected from ${zeroHumanAgent.id}.`
           : `Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers selected. No matching Zero-Human role was found for extra skill mapping.`
       });
+      if (learnedSkillAssignments.length > 0) {
+        report.details.push({
+          agentId: row.id,
+          agentName: row.name,
+          role: row.role,
+          action: "learning_skill_assigned",
+          reason: `Hermes memory mapped ${learnedSkillAssignments.length} permanent learned skills to this agent: ${learnedSkillAssignments.map((assignment) => assignment.skill.skill).slice(0, 4).join(", ")}.`
+        });
+      }
     }
     await client.query("commit");
 
@@ -1614,6 +1670,9 @@ function publicPaperclipHermesBridgeReport(): PaperclipHermesBridgeReport {
     protocolSkillSynced: false,
     agentsScanned: 0,
     agentsPatched: 0,
+    learningSkillsScanned: 0,
+    learningSkillsClassified: 0,
+    learningSkillsAssigned: 0,
     memoryNotesWritten: 0,
     unavailable: !paperclipDatabaseUrl,
     details: [],
@@ -3443,6 +3502,134 @@ function desiredSkillIdsForPaperclipAgent(row: { name: string; role: string; tit
     ...roleSkills,
     ...registrySkillsForPaperclipAgent(row, agent)
   ])).sort();
+}
+
+type HermesLearnedSkillClassification = {
+  skill: BrainSkillSummary;
+  skillId: string;
+  roles: AgentRole[];
+};
+
+function hermesLearnedSkillId(skill: BrainSkillSummary): string {
+  return `hermes_learned_${paperclipSkillSlug(skill.skill).replace(/-/g, "_")}`;
+}
+
+function classifyHermesLearnedSkill(skill: BrainSkillSummary): HermesLearnedSkillClassification {
+  const roles = new Set<AgentRole>();
+  const normalizedAgentId = slug(skill.agentId);
+  const directAgent = agents.get(skill.agentId)
+    ?? Array.from(agents.values()).find((agent) => slug(agent.id) === normalizedAgentId);
+  if (directAgent) roles.add(directAgent.role);
+  if (isAgentRole(normalizedAgentId)) roles.add(normalizedAgentId);
+
+  const inferredFromPaperclip = inferZeroHumanRoleForPaperclipAgent({
+    name: skill.agentId,
+    role: skill.agentId,
+    title: skill.skill
+  });
+  if (inferredFromPaperclip) roles.add(inferredFromPaperclip);
+
+  const normalizedSkill = paperclipSkillSlug(skill.skill);
+  for (const [skillId, definition] of Object.entries(activeSkillRegistry())) {
+    const definitionWords = searchableWords([
+      skillId,
+      definition.category,
+      definition.description,
+      definition.sourcePath ?? "",
+      ...(definition.triggers ?? [])
+    ].join(" "));
+    if (
+      paperclipSkillSlug(skillId) === normalizedSkill
+      || definitionWords.has(normalizedSkill)
+      || definitionWords.has(skill.skill.toLowerCase())
+    ) {
+      definition.roles.forEach((role) => roles.add(role));
+    }
+  }
+
+  const ruleRoles = inferSkillRoles(`${skill.agentId} ${skill.skill}`);
+  if (roles.size === 0 || ruleRoles.some((role) => role !== "operations")) {
+    ruleRoles.forEach((role) => roles.add(role));
+  }
+  if (roles.size === 0) roles.add("operations");
+
+  return {
+    skill,
+    skillId: hermesLearnedSkillId(skill),
+    roles: Array.from(roles).slice(0, 5)
+  };
+}
+
+function hermesLearnedSkillClassifications(memory: BrainMemorySummary): HermesLearnedSkillClassification[] {
+  return memory.skills
+    .filter((skill) =>
+      skill.skill.trim()
+      && skill.runs > 0
+      && (skill.confidence >= minHermesLearnedSkillConfidence || skill.runs >= 2)
+    )
+    .map(classifyHermesLearnedSkill);
+}
+
+function hermesMemoryNotesForPaperclipAgent(
+  memory: BrainMemorySummary,
+  row: { name: string; role: string; title?: string | null },
+  agent?: Agent
+): Array<{ agentId: string; note: string }> {
+  const context = paperclipAgentSkillContext(row, agent);
+  return memory.recentNotes
+    .filter((note) => {
+      const noteWords = searchableWords(`${note.agentId} ${note.note}`);
+      if (agent && slug(note.agentId) === slug(agent.id)) return true;
+      for (const word of noteWords) {
+        if (context.has(word)) return true;
+      }
+      return false;
+    })
+    .slice(0, 5);
+}
+
+function hermesLearnedSkillIdsForPaperclipAgent(
+  classifications: HermesLearnedSkillClassification[],
+  row: { name: string; role: string; title?: string | null },
+  agent?: Agent
+): HermesLearnedSkillClassification[] {
+  if (maxHermesLearnedSkillsPerAgent <= 0) return [];
+  const context = paperclipAgentSkillContext(row, agent);
+  const agentRole = agent?.role ?? inferZeroHumanRoleForPaperclipAgent(row);
+  const identityWords = new Set([
+    slug(row.name),
+    slug(row.role),
+    slug(row.title ?? ""),
+    slug(agent?.id ?? ""),
+    slug(agent?.role ?? "")
+  ].filter(Boolean));
+
+  return classifications
+    .flatMap((classification) => {
+      let score = 0;
+      if (agentRole && classification.roles.includes(agentRole)) score += 14;
+      if (identityWords.has(slug(classification.skill.agentId))) score += 18;
+      const skillWords = searchableWords([
+        classification.skill.agentId,
+        classification.skill.skill,
+        classification.skillId,
+        ...classification.roles
+      ].join(" "));
+      for (const word of skillWords) {
+        if (context.has(word)) score += 3;
+      }
+      score += Math.min(5, classification.skill.runs);
+      score += Math.round(classification.skill.confidence * 4);
+      return score > 0 ? [{ classification, score }] : [];
+    })
+    .sort((a, b) =>
+      b.score - a.score
+      || b.classification.skill.runs - a.classification.skill.runs
+      || b.classification.skill.confidence - a.classification.skill.confidence
+      || a.classification.skillId.localeCompare(b.classification.skillId)
+    )
+    .slice(0, maxHermesLearnedSkillsPerAgent)
+    .map((match) => match.classification);
 }
 
 function rankedRegistrySkillsForAgent(agent: Agent, limit: number): string[] {
