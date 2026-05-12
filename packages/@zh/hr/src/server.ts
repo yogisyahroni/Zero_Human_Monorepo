@@ -36,6 +36,16 @@ warnEnv([
 
 const config = loadConfig();
 const app = express();
+const zeroHumanControlsEnabled = process.env.ZH_ENABLE_ZERO_HUMAN_CONTROLS === "true";
+function rejectMonitoringOnlyControl(res: express.Response, action: string): boolean {
+  if (zeroHumanControlsEnabled) return false;
+  res.status(403).json({
+    error: "Zero-Human Studio is monitoring-only. Use Paperclip for company control actions.",
+    action,
+    paperclipUrl: paperclipUrl()
+  });
+  return true;
+}
 const companyState = { ...config.company };
 const agents = new Map<string, Agent>(agentsFromConfig(config).map((agent) => [agent.id, agent]));
 const tasks = new Map<string, Task>();
@@ -300,7 +310,17 @@ type PaperclipHermesBridgeReport = {
     agentId?: string;
     agentName?: string;
     role?: string;
-    action: "protocol_synced" | "paperclip_hiring_authority" | "agent_created" | "agent_patched" | "agent_already_ready" | "hierarchy_patched" | "duplicate_detected" | "learning_skill_assigned" | "learning_skill_already_assigned" | "memory_written" | "skipped";
+    action:
+      | "monitoring_only_boundary"
+      | "paperclip_hiring_authority"
+      | "agent_already_ready"
+      | "hierarchy_drift_detected"
+      | "agent_guidance_drift_detected"
+      | "duplicate_detected"
+      | "learning_skill_recommended"
+      | "learning_skill_already_assigned"
+      | "memory_written"
+      | "legacy_company_active_agents_detected";
     reason: string;
   }>;
   error?: string;
@@ -846,7 +866,6 @@ function publicPaperclipSkillSyncReport(): PaperclipSkillSyncReport {
 }
 
 const hermesProtocolSkillKey = "zero-human/hermes-operating-protocol";
-const hermesProtocolSkillSlug = "hermes-operating-protocol";
 const maxRegistrySkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_REGISTRY_SKILLS_PER_AGENT ?? 8));
 const maxManualPaperclipSkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_MANUAL_PAPERCLIP_SKILLS_PER_AGENT ?? 4));
 const maxHermesLearnedSkillsPerAgent = Math.max(0, Number(process.env.ZH_MAX_HERMES_LEARNED_SKILLS_PER_AGENT ?? 6));
@@ -1418,69 +1437,34 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
 
   const memory = await brainMemoryStatus();
   const learnedSkillClassifications = hermesLearnedSkillClassifications(memory);
-  const markdown = hermesOperatingProtocolMarkdown(memory);
   const client = await getPaperclipPool().connect();
   try {
     const companyId = await resolvePaperclipCompanyId(client);
     report.companyId = companyId;
     report.learningSkillsScanned = memory.skills.length;
     report.learningSkillsClassified = learnedSkillClassifications.length;
-    await client.query("begin");
-    await client.query(
-      `insert into company_skills
-        (company_id, key, slug, name, description, markdown, source_type, source_locator, source_ref, trust_level, compatibility, file_inventory, metadata)
-       values ($1, $2, $3, $4, $5, $6, 'zero_human_hermes', 'zero-human-hermes-bridge', 'hermes-operating-protocol', 'markdown_only', 'compatible', $7::jsonb, $8::jsonb)
-       on conflict (company_id, key) do update set
-         slug = excluded.slug,
-         name = excluded.name,
-         description = excluded.description,
-         markdown = excluded.markdown,
-         source_type = excluded.source_type,
-         source_locator = excluded.source_locator,
-         source_ref = excluded.source_ref,
-         file_inventory = excluded.file_inventory,
-         metadata = excluded.metadata,
-         updated_at = now()`,
-      [
-        companyId,
-        hermesProtocolSkillKey,
-        hermesProtocolSkillSlug,
-        "Hermes Operating Protocol",
-        "Shared Zero-Human memory, delegation, and token guardrails for Paperclip agents.",
-        markdown,
-        JSON.stringify([{ path: "zero-human/hermes-operating-protocol", kind: "generated-skill" }]),
-        JSON.stringify({
-          zeroHumanBridge: true,
-          memoryOk: memory.ok,
-          memoryEntries: memory.entries,
-          memoryOutcomes: memory.outcomes,
-          syncedAt: report.createdAt
-        })
-      ]
-    );
-    report.protocolSkillSynced = true;
-    report.details.push({ action: "protocol_synced", reason: "Hermes protocol skill upserted in Paperclip." });
+    report.details.push({
+      action: "monitoring_only_boundary",
+      reason: "Zero-Human audited Paperclip state without mutating company skills, org hierarchy, hiring, issues, heartbeats, or agent runtime configuration."
+    });
 
     report.details.push({
       action: "paperclip_hiring_authority",
-      reason: "Zero-Human did not create missing agents during bridge sync; Paperclip remains the hiring and execution authority."
+      reason: "Paperclip remains the hiring, issue, org, and execution authority. Zero-Human only reports drift and recommendations."
     });
 
     const legacyAgentResult = await client.query<{ id: string; name: string; role: string }>(
-      `update agents
-          set runtime_config = jsonb_set(coalesce(runtime_config, '{}'::jsonb), '{heartbeat,enabled}', 'false'::jsonb, true),
-              updated_at = now()
+      `select id::text, name, role
+        from agents
         where company_id <> $1
           and status <> 'terminated'
-          and coalesce(runtime_config->'heartbeat'->>'enabled', 'true') <> 'false'
-        returning id::text, name, role`,
+          and coalesce(runtime_config->'heartbeat'->>'enabled', 'true') <> 'false'`,
       [companyId]
     );
     if (legacyAgentResult.rows.length > 0) {
-      report.agentsPatched += legacyAgentResult.rows.length;
       report.details.push({
-        action: "skipped",
-        reason: `Paused ${legacyAgentResult.rows.length} legacy Paperclip agents from older companies so only the current owner-selected company can run heartbeats.`
+        action: "legacy_company_active_agents_detected",
+        reason: `${legacyAgentResult.rows.length} active agents exist in older Paperclip companies. Zero-Human did not pause or modify them; choose the active company in Paperclip or archive duplicates there.`
       });
     }
 
@@ -1532,7 +1516,6 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
       const desiredTitle = canonicalRole ? canonicalTitleForPaperclipRole(canonicalRole) : (row.title ?? "");
       const hierarchyChanged = Boolean(canonicalRole)
         && ((row.reports_to ?? null) !== (desiredReportsTo ?? null) || (row.title ?? "") !== desiredTitle);
-      const relevantMemoryNotes = hermesMemoryNotesForPaperclipAgent(memory, row, zeroHumanAgent);
       const desiredSkills = Array.from(new Set([
         hermesProtocolSkillKey,
         ...nativeSkillKeys,
@@ -1580,80 +1563,42 @@ async function syncHermesBridgeToPaperclip(): Promise<PaperclipHermesBridgeRepor
         }
         continue;
       }
-      for (const skillId of desiredZeroHumanSkillIds) {
-        await upsertZeroHumanPaperclipSkill(client, companyId, skillId, report.createdAt, zeroHumanAgent?.role ?? "backend");
-      }
-      const nextConfig = {
-        ...configValue,
-        paperclipSkillSync: {
-          ...syncValue,
-          desiredSkills
-        },
-        zeroHumanMcpSync: {
-          ...existingMcpSync,
-          source: "zero-human-role-map",
-          syncedAt: report.createdAt,
-          servers: desiredMcpServers
-        },
-        zeroHumanMemorySync: {
-          source: "hermes-live-brain",
-          syncedAt: report.createdAt,
-          learnedSkills: learnedSkillAssignments.map((assignment) => ({
-            skillId: assignment.skillId,
-            key: zeroHumanPaperclipSkillKey(assignment.skillId),
-            sourceAgentId: assignment.skill.agentId,
-            skill: assignment.skill.skill,
-            roles: assignment.roles,
-            runs: assignment.skill.runs,
-            confidence: assignment.skill.confidence,
-            updatedAt: assignment.skill.updatedAt
-          })),
-          recentNotes: relevantMemoryNotes
-        }
-      };
-      await client.query(
-        "update agents set adapter_config = $3::jsonb, runtime_config = $4::jsonb, reports_to = $5::uuid, title = coalesce(nullif($6, ''), title), updated_at = now() where company_id = $1 and id = $2",
-        [companyId, row.id, JSON.stringify(nextConfig), JSON.stringify(nextRuntimeConfig), desiredReportsTo, desiredTitle]
-      );
-      report.agentsPatched += 1;
       if (hierarchyChanged) {
         report.details.push({
           agentId: row.id,
           agentName: row.name,
           role: row.role,
-          action: "hierarchy_patched",
-          reason: `Canonical hierarchy applied: ${canonicalRole} reports to ${canonicalManagerRoleForPaperclipRole(canonicalRole!) ?? "no one"}; title set to ${desiredTitle}.`
+          action: "hierarchy_drift_detected",
+          reason: `Paperclip hierarchy differs from Zero-Human's recommended map: ${canonicalRole} would report to ${canonicalManagerRoleForPaperclipRole(canonicalRole!) ?? "no one"} with title ${desiredTitle}. Zero-Human did not change it.`
         });
       }
       report.details.push({
         agentId: row.id,
         agentName: row.name,
         role: row.role,
-        action: "agent_patched",
+        action: "agent_guidance_drift_detected",
         reason: zeroHumanAgent
-          ? `Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role/learned skills (${learnedSkillKeys.length} from Hermes memory), and ${desiredMcpServers.length} MCP servers selected from ${zeroHumanAgent.id}.`
-          : `Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers selected. No matching Zero-Human role was found for extra skill mapping.`
+          ? `Recommended guidance differs: Hermes protocol, ${zeroHumanSkillKeys.length} Zero-Human role/learned skills (${learnedSkillKeys.length} from Hermes memory), and ${desiredMcpServers.length} MCP servers are relevant for ${zeroHumanAgent.id}. Paperclip must opt in/apply this itself.`
+          : `Recommended native guidance differs: Hermes protocol, ${nativeSkillKeys.length} Paperclip native role skills, and ${desiredMcpServers.length} native MCP servers are relevant. Paperclip must opt in/apply this itself.`
       });
       if (learnedSkillAssignments.length > 0) {
         report.details.push({
           agentId: row.id,
           agentName: row.name,
           role: row.role,
-          action: "learning_skill_assigned",
-          reason: `Hermes memory mapped ${learnedSkillAssignments.length} permanent learned skills to this agent: ${learnedSkillAssignments.map((assignment) => assignment.skill.skill).slice(0, 4).join(", ")}.`
+          action: "learning_skill_recommended",
+          reason: `Hermes memory recommends ${learnedSkillAssignments.length} permanent learned skills for this agent: ${learnedSkillAssignments.map((assignment) => assignment.skill.skill).slice(0, 4).join(", ")}.`
         });
       }
     }
-    await client.query("commit");
 
-    if (report.agentsPatched > 0 && await rememberInHermes("zero_human_owner", `Paperclip Hermes bridge synced: ${report.agentsPatched}/${report.agentsScanned} agents patched with ${hermesProtocolSkillKey}.`)) {
+    if (await rememberInHermes("zero_human_owner", `Paperclip Hermes bridge audited ${report.agentsScanned} agents without mutating Paperclip control data.`)) {
       report.memoryNotesWritten += 1;
-      report.details.push({ action: "memory_written", reason: "Bridge sync note persisted in Hermes memory." });
+      report.details.push({ action: "memory_written", reason: "Read-only bridge audit note persisted in Hermes memory." });
     }
     latestPaperclipHermesBridgeReport = report;
     return report;
   } catch (error) {
-    await client.query("rollback").catch(() => undefined);
     report.unavailable = true;
     report.error = (error as Error).message;
     latestPaperclipHermesBridgeReport = report;
@@ -1715,12 +1660,12 @@ async function runPaperclipHermesAutoSync(reason: string): Promise<void> {
   try {
     const report = await syncHermesBridgeToPaperclip();
     if (report.unavailable) {
-      addEvent("paperclip_hermes_auto_sync", `Auto sync skipped: ${report.error}`);
-    } else if (report.agentsPatched > 0) {
-      addEvent("paperclip_hermes_auto_sync", `Auto sync patched ${report.agentsPatched}/${report.agentsScanned} Paperclip agents (${reason}).`);
+      addEvent("paperclip_hermes_auto_audit", `Auto audit skipped: ${report.error}`);
+    } else {
+      addEvent("paperclip_hermes_auto_audit", `Auto audit scanned ${report.agentsScanned} Paperclip agents without control changes (${reason}).`);
     }
   } catch (error) {
-    addEvent("paperclip_hermes_auto_sync", `Auto sync failed: ${(error as Error).message}`);
+    addEvent("paperclip_hermes_auto_audit", `Auto audit failed: ${(error as Error).message}`);
   } finally {
     paperclipHermesAutoSyncRunning = false;
     if (paperclipHermesAutoSyncQueued) {
@@ -4978,6 +4923,7 @@ app.get("/api/paperclip/skills/sync", (_req, res) => {
 });
 
 app.post("/api/paperclip/skills/sync", async (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "sync_skills_to_paperclip")) return;
   const report = await syncSkillsToPaperclip();
   addEvent(
     "paperclip_skill_sync",
@@ -4994,6 +4940,7 @@ app.get("/api/paperclip/repositories/sync", (_req, res) => {
 });
 
 app.post("/api/paperclip/repositories/sync", async (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "sync_repositories_to_paperclip")) return;
   const report = await syncRepositoriesToPaperclip();
   addEvent(
     "paperclip_repository_sync",
@@ -5009,6 +4956,7 @@ app.get("/api/paperclip/chat/signals", (_req, res) => {
 });
 
 app.post("/api/paperclip/chat/signals/scan", async (_req, res) => {
+  if (rejectMonitoringOnlyControl(res, "scan_chat_hiring_signals")) return;
   const report = await scanPaperclipChatSignals();
   addEvent(
     "paperclip_chat_signal_scan",
@@ -5029,7 +4977,7 @@ app.post("/api/paperclip/hermes/sync", async (_req, res) => {
     "paperclip_hermes_bridge",
     report.unavailable
       ? `Paperclip Hermes bridge unavailable: ${report.error}`
-      : `Hermes bridge synced to ${report.agentsPatched}/${report.agentsScanned} Paperclip agents.`
+      : `Hermes bridge audited ${report.agentsScanned} Paperclip agents without control changes.`
   );
   res.status(report.unavailable ? 503 : 200).json(report);
 });
@@ -5054,6 +5002,7 @@ app.get("/api/issue-policies", (_req, res) => {
 });
 
 app.put("/api/issue-policies/:role", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "update_issue_policy")) return;
   const role = req.params.role as AgentRole;
   if (!(role in roleSkillCatalog)) return res.status(404).json({ error: "Unknown role" });
   const current = issuePolicies.get(role) ?? defaultIssuePolicies[role];
@@ -5226,6 +5175,7 @@ app.get("/api/state", async (_req, res) => {
 });
 
 app.post("/api/repositories", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "register_repository")) return;
   const { name, url, branch, authType, username, token, sshPrivateKey, sourceKind } = (req.body ?? {}) as {
     name?: string;
     url?: string;
@@ -5284,6 +5234,7 @@ app.post("/api/repositories", async (req, res) => {
 });
 
 app.post("/api/repositories/:repositoryId/sync", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "sync_repository")) return;
   try {
     const repository = getRepository(req.params.repositoryId);
     if (repository.id === "default") {
@@ -5438,6 +5389,7 @@ app.post("/api/mcp/:serverId/test", (req, res) => {
 });
 
 app.post("/api/agents/:agentId/hire", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "hire_agent")) return;
   const agent = agents.get(req.params.agentId);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
   agent.status = "idle";
@@ -5447,6 +5399,7 @@ app.post("/api/agents/:agentId/hire", async (req, res) => {
 });
 
 app.post("/api/hiring/requests", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "create_hiring_request")) return;
   const { title, department, description, requestedRole, source } = (req.body ?? {}) as {
     title?: string;
     department?: string;
@@ -5472,6 +5425,7 @@ app.post("/api/hiring/requests", (req, res) => {
 });
 
 app.post("/api/hiring/requests/:requestId/approve", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "approve_hiring_request")) return;
   const request = hiringRequests.get(req.params.requestId);
   if (!request) return res.status(404).json({ error: "Hiring request not found" });
   if (request.status !== "pending_approval") return res.status(409).json({ error: `Request is already ${request.status}` });
@@ -5494,6 +5448,7 @@ app.post("/api/hiring/requests/:requestId/approve", async (req, res) => {
 });
 
 app.post("/api/hiring/requests/:requestId/reject", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "reject_hiring_request")) return;
   const request = hiringRequests.get(req.params.requestId);
   if (!request) return res.status(404).json({ error: "Hiring request not found" });
   if (request.status !== "pending_approval") return res.status(409).json({ error: `Request is already ${request.status}` });
@@ -5508,6 +5463,7 @@ app.post("/api/hiring/requests/:requestId/reject", (req, res) => {
 });
 
 app.post("/api/agents/:agentId/resume", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "resume_agent")) return;
   const agent = agents.get(req.params.agentId);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
   const { resetCost } = (req.body ?? {}) as { resetCost?: boolean };
@@ -5521,6 +5477,7 @@ app.post("/api/agents/:agentId/resume", async (req, res) => {
 });
 
 app.post("/api/budget", (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "update_budget")) return;
   const { globalBudgetUsd, agentCaps } = (req.body ?? {}) as {
     globalBudgetUsd?: number;
     agentCaps?: Record<string, number>;
@@ -5560,6 +5517,7 @@ app.post("/api/budget", (req, res) => {
 });
 
 app.post("/api/tasks", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "dispatch_task")) return;
   const { agentId, type, description, priority, context, repositoryId } = req.body as {
     agentId?: string;
     type?: TaskType;
@@ -5654,6 +5612,7 @@ app.post("/api/tasks/:taskId/diff", async (req, res) => {
 });
 
 app.post("/api/tasks/:taskId/approve", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "approve_task")) return;
   const task = tasks.get(req.params.taskId);
   if (!task) return res.status(404).json({ error: "Task not found" });
   if (task.status === "error") return res.status(409).json({ error: "Cannot approve a failed task" });
@@ -5681,6 +5640,7 @@ app.post("/api/tasks/:taskId/approve", async (req, res) => {
 });
 
 app.post("/api/tasks/:taskId/reject", async (req, res) => {
+  if (rejectMonitoringOnlyControl(res, "reject_task")) return;
   const task = tasks.get(req.params.taskId);
   if (!task) return res.status(404).json({ error: "Task not found" });
   await cleanupWorktree(task);

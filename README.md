@@ -2,7 +2,7 @@
 
 Autonomous AI Company Operating System that unifies 9Router, Hermes Agent, and Paperclip into one Docker-managed execution company.
 
-Zero-Human Studio is the owner/control plane. Paperclip is the company execution board. Codex CLI performs real repository work. 9Router is the AI gateway. Hermes is the live memory and guidance brain that keeps agents from repeating context, wasting tokens, or getting stuck in loops.
+Zero-Human Studio is the owner monitoring surface. Paperclip is the company control plane and execution board. Codex CLI performs real repository work. 9Router is the AI gateway. Hermes is the live memory and guidance brain that keeps agents from repeating context, wasting tokens, or getting stuck in loops.
 
 ## What Is Included
 
@@ -14,10 +14,10 @@ Zero-Human Studio is the owner/control plane. Paperclip is the company execution
 
 ## Core Workflow
 
-1. Owner opens Zero-Human Studio at <http://localhost:3003>.
-2. Owner configures repositories, company roles, skills, MCP tools, and 9Router model combos.
-3. Zero-Human syncs company policy into Paperclip.
-4. Paperclip manages issues, meetings, hiring, agent assignment, and execution state.
+1. Owner opens Paperclip at <http://localhost:3100> for company control: issues, hiring, meetings, assignments, routines, goals, and execution state.
+2. Owner opens Zero-Human Studio at <http://localhost:3003> for realtime monitoring, file-change visibility, Codex/Paperclip run inspection, Hermes memory, guardrails, and 9Router health.
+3. Paperclip owns repositories, company roles, skills, MCP tools, issues, and agent execution.
+4. Zero-Human audits Paperclip state and reports drift or recommendations without mutating Paperclip control data by default.
 5. Codex CLI runs inside the Paperclip/container environment and edits the target repository.
 6. Hermes injects memory, skills, MCP guidance, blocker recovery hints, meeting summaries, and token guardrails.
 7. 9Router receives all AI calls through combo names such as `combotest`; provider/model routing stays inside 9Router.
@@ -29,18 +29,17 @@ Zero-Human Studio is the owner/control plane. Paperclip is the company execution
 
 - Owner dashboard with live/stale state, company health, active tasks, blockers, owner decisions, repository readiness, memory, and cost watch.
 - Execution Monitor for Paperclip/Codex runs with transcript, duration, root error, owner action, artifacts, changed files, and diff summary.
-- Repository intake for public and private repositories, including token/SSH credential metadata support.
-- Skills registry import from repo paths or skills collections, duplicate detection, role mapping, and category cleanup.
-- MCP marketplace/manage surface for JSON-based MCP server definitions and role tool mapping.
-- Paperclip sync panel that applies canonical org policy into Paperclip without requiring manual per-agent setup.
+- Monitoring-first repository visibility for Paperclip workspaces and codebase changes.
+- Skills and MCP audit surfaces that show recommended mappings and drift; Paperclip remains responsible for applying operational changes.
+- Paperclip bridge panel that audits org/skill/MCP guidance without rewriting Paperclip hierarchy, hiring, issues, or heartbeat settings by default.
 - Deep links into Paperclip, Hermes, and 9Router so the owner can jump to the right system quickly.
 
 ### Paperclip Integration
 
 - Paperclip remains the company execution board and hiring authority.
 - Agent creation, hiring requests, issues, routines, goals, meetings, and run state live in Paperclip.
-- Zero-Human sync is idempotent: it updates canonical roles and guidance without randomly creating duplicate agents.
-- Canonical hierarchy keeps CEO at the top, C-level leaders under CEO, leads under their department, and specialists under leads.
+- Zero-Human bridge is idempotent and monitoring-only by default: it audits canonical roles and guidance without creating agents, pausing agents, or rewriting Paperclip hierarchy.
+- Canonical hierarchy recommendations keep CEO at the top, C-level leaders under CEO, leads under their department, and specialists under leads; Paperclip is the source of truth for applying changes.
 - Duplicate CEO/CTO-style roles are detected and reported instead of silently multiplied.
 - Paperclip issues can still be created directly from Paperclip UI; Zero-Human policy and Hermes guidance still apply to subsequent agent runs.
 
@@ -54,12 +53,12 @@ Zero-Human Studio is the owner/control plane. Paperclip is the company execution
 
 ### Skills And MCP Automation
 
-- New hires automatically receive role-relevant skills before their first run.
-- Imported skills are deduped and mapped to existing roles automatically.
+- New hires should receive role-relevant skills from Paperclip; Zero-Human audits and recommends role/skill/MCP mappings.
+- Imported skills can be deduped and mapped to existing roles, but Paperclip remains the operational source of truth.
 - Android, backend, product, design, marketing, finance, support, QA, and DevOps-style skills can be mapped by role metadata.
 - Sequential Thinking MCP is mandatory for every agent as the baseline thinking pattern.
-- Role-specific MCP tools, such as Filesystem, Postgres, Browser, or other marketplace entries, are attached based on role needs.
-- Zero-Human keeps Paperclip skill/MCP config aligned after new agent hires or skill imports.
+- Role-specific MCP tools, such as Filesystem, Postgres, Browser, or other marketplace entries, are recommended based on role needs.
+- Zero-Human reports Paperclip skill/MCP drift after new agent hires or skill imports instead of silently changing agent configuration.
 
 ### Meeting Rooms
 
